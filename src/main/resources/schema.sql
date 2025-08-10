@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS user (
+	name TEXT PRIMARY KEY,
+	uuid TEXT NOT NULL,
+	password_hash TEXT DEFAULT NULL,
+	joined_at INTEGER NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	rank TEXT NOT NULL DEFAULT "newcommer",
+	discord_name TEXT DEFAULT NULL,
+	muted_players TEXT DEFAULT NULL,
+	is_muted BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS uuid_index ON user (uuid);
