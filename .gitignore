@@ -161,3 +161,10 @@ android/libs/
 # Plugin specific
 build
 server-release.jar
+
+# Other
+/config
+Mindustry.jar
+server-release.jar
+sample.db
+/dradle
