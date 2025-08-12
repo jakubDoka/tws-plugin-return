@@ -3,9 +3,10 @@ buildscript {
 
     extra.apply {
         set("mindustryVersion", "v150")
-        set("kotlinVersion", "2.0.20")
+        set("kotlinVersion", "2.2.0")
         set("sqliteJdbcVersion", "3.50.3.0")
         set("argon2Version", "2.12")
+        set("kotlinxSerializationVersion", "1.9.0")
     }
 
     dependencies {
@@ -14,7 +15,8 @@ buildscript {
 }
 
 plugins {
-    kotlin("jvm") version "2.0.20"
+    kotlin("jvm") version "2.2.0"
+    kotlin("plugin.serialization") version "2.2.0"
     id("com.github.johnrengelman.shadow") version "8.1.1"
     idea
 }
@@ -35,6 +37,7 @@ dependencies {
 
     implementation("org.xerial:sqlite-jdbc:${project.extra["sqliteJdbcVersion"]}")
     implementation("de.mkammerer:argon2-jvm:${project.extra["argon2Version"]}")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:${project.extra["kotlinxSerializationVersion"]}")
 }
 
 tasks.shadowJar {

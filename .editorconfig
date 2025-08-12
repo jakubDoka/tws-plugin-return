@@ -1,0 +1,1 @@
+ktlint_disable_redundant-labeled-return-on-last-expression-in-lambda = true

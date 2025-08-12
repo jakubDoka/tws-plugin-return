@@ -23,9 +23,13 @@ private class Queryes(val connection: Connection) {
     val addLogin = initStmt("INSERT INTO login (uuid, name) VALUES (?, ?)")
     val removeLogin = initStmt("DELETE FROM login WHERE uuid = ?")
     val getUser = initStmt("SELECT * FROM user WHERE name = ?")
+    val getRank = initStmt("SELECT rank FROM user WHERE name = ?")
+    val setRank = initStmt("UPDATE user SET rank = ? WHERE name = ?")
     val createUser = initStmt("INSERT INTO user (name, password_hash) VALUES (?, ?)")
     val deleteUser = initStmt("DELETE FROM user WHERE name = ?")
     val getPasswordHash = initStmt("SELECT password_hash FROM user WHERE name = ?")
+    val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ? OR ban_key = ?")
+    val markGriefer = initStmt("INSERT INTO griefer (ban_key) VALUES (?)")
 
     fun initStmt(str: String): PreparedStatement = connection.prepareStatement(str)
 }
@@ -52,6 +56,47 @@ class DbReactor() {
         }
 
         qs = Queryes(connection)
+    }
+
+    fun isGriefer(player: Player): Boolean {
+        qs.isGriefer.setString(1, player.uuid())
+        qs.isGriefer.setString(1, player.ip())
+        val resultSet = qs.isGriefer.executeQuery()
+        return resultSet.next()
+    }
+
+    fun markGriefer(player: Player) {
+        qs.markGriefer.setString(1, player.uuid())
+        qs.markGriefer.executeUpdate()
+        qs.markGriefer.setString(1, player.ip())
+        qs.markGriefer.executeUpdate()
+        println("marked ${player.name} as griefer")
+    }
+
+    fun getRank(player: Player): String {
+        qs.getRank.setString(1, player.name)
+        val resultSet = qs.getRank.executeQuery()
+        if (!resultSet.next()) return Rank.GUEST
+        return resultSet.getString("rank") ?: Rank.GUEST
+    }
+
+    fun getPlayerNameByUuid(uuid: String): String? {
+        qs.getLogin.setString(1, uuid)
+        val resultSet = qs.getLogin.executeQuery()
+        if (!resultSet.next()) return null
+        return resultSet.getString("name")
+    }
+
+    fun playerExists(name: String): Boolean {
+        qs.getUser.setString(1, name)
+        val resultSet = qs.getUser.executeQuery()
+        return resultSet.next()
+    }
+
+    fun setRank(name: String, rank: String) {
+        qs.setRank.setString(1, rank)
+        qs.setRank.setString(2, name)
+        qs.setRank.executeUpdate()
     }
 
     fun loadPlayer(player: Player): String? {
@@ -148,8 +193,9 @@ class DbReactor() {
 
         val fmtJoinedAt = formatter.format(Instant.ofEpochSecond(joinedAt))
 
-        return "[green]You are logged in as ${player.name}!\n" +
-                "[white]Your joined at ${fmtJoinedAt}!"
+        return "[green]You are logged in as ${player.name}![]\n" +
+                "Your rank is ${getRank(player)}.\n" +
+                "Your joined at ${fmtJoinedAt}."
     }
 
     fun computePasswordHash(password: String): String {
