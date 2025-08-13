@@ -17,13 +17,21 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+const val BUG_MSG = "[red]Bug occured, please report this to the devs."
 
 private class Queryes(val connection: Connection) {
     val getLogin = initStmt("SELECT * FROM login WHERE uuid = ?")
     val addLogin = initStmt("INSERT INTO login (uuid, name) VALUES (?, ?)")
     val removeLogin = initStmt("DELETE FROM login WHERE uuid = ?")
     val getUser = initStmt("SELECT * FROM user WHERE name = ?")
-    val getRank = initStmt("SELECT rank FROM user WHERE name = ?")
+    val getUserByUuid = initStmt(
+        "SELECT * FROM user JOIN login ON" +
+                " user.name = login.name WHERE login.uuid = ?"
+    )
+    val getRank = initStmt(
+        "SELECT rank FROM user JOIN login ON" +
+                " user.name = login.name WHERE login.uuid = ?"
+    )
     val setRank = initStmt("UPDATE user SET rank = ? WHERE name = ?")
     val createUser = initStmt("INSERT INTO user (name, password_hash) VALUES (?, ?)")
     val deleteUser = initStmt("DELETE FROM user WHERE name = ?")
@@ -34,7 +42,7 @@ private class Queryes(val connection: Connection) {
     fun initStmt(str: String): PreparedStatement = connection.prepareStatement(str)
 }
 
-class DbReactor() {
+class DbReactor(val config: Config) {
     private val qs: Queryes
     private val connection: Connection
     private val hasher: Argon2 = Argon2Factory.create()
@@ -74,7 +82,7 @@ class DbReactor() {
     }
 
     fun getRank(player: Player): String {
-        qs.getRank.setString(1, player.name)
+        qs.getRank.setString(1, player.uuid())
         val resultSet = qs.getRank.executeQuery()
         if (!resultSet.next()) return Rank.GUEST
         return resultSet.getString("rank") ?: Rank.GUEST
@@ -100,6 +108,12 @@ class DbReactor() {
     }
 
     fun loadPlayer(player: Player): String? {
+        if (isGriefer(player)) {
+            val griferRank = config.getRank(player, Rank.GRIEFER) ?: return BUG_MSG
+            player.name = "${player.name}[${griferRank.color}]griefer[]"
+            return "[red]you are a griefer, all actions are blocked"
+        }
+
         qs.getLogin.setString(1, player.uuid())
         var resultSet = qs.getLogin.executeQuery();
 
@@ -113,10 +127,13 @@ class DbReactor() {
 
         if (!resultSet.next()) {
             println("ERROR: player ${player.name} is not registered but he has a login")
-            return "[red]Bug occured, please report this to the devs."
+            return BUG_MSG
         }
 
-        player.name = name
+        val rank = resultSet.getString("rank")
+        val rankObj = config.getRank(player, rank) ?: return BUG_MSG
+        player.name = "$name${rankObj.display(rank)}"
+
         return null
     }
 
@@ -131,7 +148,7 @@ class DbReactor() {
         val passwordHash = resultSet.getString("password_hash")
         if (passwordHash == null) {
             println("ERROR: player ${name} password hash is null")
-            return "Bug occured, please report this to the devs."
+            return BUG_MSG
         }
 
         @Suppress("DEPRECATION")
@@ -145,7 +162,7 @@ class DbReactor() {
         qs.addLogin.executeUpdate()
 
         println("player ${name} logged in")
-        player.name = name
+        player.kick("you logged in, you can reconnect immediatelly", 0)
 
         return null
     }
@@ -183,18 +200,20 @@ class DbReactor() {
                     " consider doing so with /login or /register command."
         }
 
-        qs.getUser.setString(1, player.name)
+        qs.getUserByUuid.setString(1, player.uuid())
         resultSet = qs.getUser.executeQuery()
 
-        var joinedAt = resultSet.getLong("joined_at")
+        if (!resultSet.next()) return BUG_MSG
 
+        val rank = resultSet.getString("rank")
+
+        val joinedAt = resultSet.getLong("joined_at")
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault())
-
         val fmtJoinedAt = formatter.format(Instant.ofEpochSecond(joinedAt))
 
         return "[green]You are logged in as ${player.name}![]\n" +
-                "Your rank is ${getRank(player)}.\n" +
+                "Your rank is ${rank}.\n" +
                 "Your joined at ${fmtJoinedAt}."
     }
 

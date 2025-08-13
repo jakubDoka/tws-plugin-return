@@ -1,28 +1,19 @@
 package mlokis.tws
 
 import arc.util.CommandHandler
-import kotlinx.serialization.*
-import kotlinx.serialization.json.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import mindustry.game.EventType
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.world.Tile
 import kotlin.math.max
+import kotlin.math.min
 
-
-fun Player.sendMissingArgsMessage(args: Array<String>, expected: Int): Boolean {
-    if (args.size >= expected) {
-        return false
-    }
-    sendMessage("[red]expected at least $expected arguments, got ${args.size}")
-    return true
-}
-
-@Suppress("unused")
 class Main : Plugin() {
-    var db = DbReactor()
     var config = Config.load()
+    var db = DbReactor(config)
     val grieferSessions = mutableListOf<MarkGrieferSession>()
     var commandHandler: CommandHandler? = null
 
@@ -43,18 +34,14 @@ class Main : Plugin() {
             get() = nay.values.fold(0) { acc, weight -> acc + weight }
 
         fun display(idx: Int): String {
-            return "${initiator.name}[] wants to mark [pink]${target.name}[] name a griefer," +
-                    " [yellow]${neededVotes}[] votes needed" +
+            return "${initiator.name}[] wants to mark [pink]${target.name}[] a griefer" +
+                    " because [yellow]${reason}[], [yellow]${neededVotes}[] votes needed" +
                     " (#$idx [green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s)"
         }
     }
 
 
     override fun init() {
-        val permissionTable = mutableMapOf<Tile, BlockProtectionRank>()
-
-
-
         arc.util.Timer.schedule({
             val toRemove = mutableListOf<MarkGrieferSession>()
             val text = StringBuilder()
@@ -76,11 +63,57 @@ class Main : Plugin() {
             }
         }, 0f, 1f)
 
-        mindustry.Vars.netServer.admins.addActionFilter {
-            // TODO: add temporal caching
+        val minAfkPeriod = 1000 * 5
+        val afkMarker = "[red](afk)[]"
 
+        class PlayerActivityTracker {
+            var lastActive = System.currentTimeMillis()
+
+            val isAfk: Boolean
+                get() = System.currentTimeMillis() - lastActive > minAfkPeriod
+
+            fun onAction(player: Player) {
+                lastActive = System.currentTimeMillis()
+                player.name = player.name.replace(afkMarker, "")
+            }
+        }
+
+        class TilePermission(var protectionRank: BlockProtectionRank, var issuer: PlayerActivityTracker)
+
+        val defaultPermission = TilePermission(BlockProtectionRank.Guest, PlayerActivityTracker())
+        val playerActivityByUuid = mutableMapOf<String, PlayerActivityTracker>()
+        val permissionTable = mutableMapOf<Tile, TilePermission>()
+
+        arc.util.Timer.schedule({
+            val toRemove = mutableListOf<String>()
+            for ((uuid, tracker) in playerActivityByUuid) {
+                if (tracker.isAfk) {
+                    val player = Groups.player.find { it.uuid() == uuid } ?: run {
+                        toRemove.add(uuid)
+                        continue
+                    }
+                    if (afkMarker !in player.name) {
+                        player.name += afkMarker
+                    }
+                }
+            }
+        }, 0f, minAfkPeriod.toFloat() / 1000)
+
+        mindustry.Vars.netServer.admins.addChatFilter { player, message ->
+            if (player == null) return@addChatFilter message
+            playerActivityByUuid.getOrPut(player.uuid())
+            { PlayerActivityTracker() }.onAction(player)
+            message
+        }
+
+        mindustry.Vars.netServer.admins.addActionFilter {
             if (it.player == null) return@addActionFilter true
+
+            playerActivityByUuid.getOrPut(it.player.uuid())
+            { PlayerActivityTracker() }.onAction(it.player)
+
             if (db.isGriefer(it.player)) {
+                it.player.sendMessage("[red]you are griefer, all actions are blocked")
                 return@addActionFilter false
             }
 
@@ -89,14 +122,18 @@ class Main : Plugin() {
                 ?: return@addActionFilter false
 
             val tile = it.tile ?: return@addActionFilter true
-            val blockProtectionRank = permissionTable[tile] ?: BlockProtectionRank.Guest
+            val bp = permissionTable[tile] ?: defaultPermission
 
-            if (blockProtectionRank.ordinal < playerRank.blockProtectionRank.ordinal) {
+            if (bp.protectionRank.ordinal > playerRank.blockProtectionRank.ordinal && !bp.issuer.isAfk) {
                 it.player.sendMessage(
                     "[red]You do not have permission to do that!" +
-                            " (required rank: ${playerRank.blockProtectionRank})"
+                            " (required rank: ${bp.protectionRank}, yours: ${playerRank.blockProtectionRank})"
                 )
                 return@addActionFilter false
+            }
+
+            if (bp.issuer.isAfk) {
+                permissionTable.remove(tile)
             }
 
             return@addActionFilter true
@@ -106,11 +143,34 @@ class Main : Plugin() {
             permissionTable.remove(event.tile)
         }
 
+        arc.Events.on(EventType.BlockBuildEndEvent::class.java) { event ->
+            if (event.breaking) {
+                permissionTable.remove(event.tile)
+            }
+        }
+
+        arc.Events.on(EventType.PlayEvent::class.java) { event ->
+            permissionTable.clear()
+        }
+
         arc.Events.on(EventType.BlockBuildBeginEvent::class.java) { event ->
             if (event.unit.player == null) return@on
             val playerRankName = db.getRank(event.unit.player)
             val playerRank = config.getRank(event.unit.player, playerRankName) ?: return@on
-            permissionTable[event.tile] = playerRank.blockProtectionRank
+            val tp = permissionTable[event.tile] ?: defaultPermission
+            if (tp.protectionRank.ordinal < playerRank.blockProtectionRank.ordinal || tp.issuer.isAfk) {
+                permissionTable[event.tile] = TilePermission(
+                    playerRank.blockProtectionRank,
+                    playerActivityByUuid.getOrPut(event.unit.player.uuid()) { PlayerActivityTracker() }
+                )
+            }
+        }
+
+        arc.Events.on(EventType.PlayerLeave::class.java) { event ->
+            for (session in grieferSessions) {
+                session.nay.remove(event.player)
+                session.yea.remove(event.player)
+            }
         }
 
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
@@ -124,7 +184,6 @@ class Main : Plugin() {
     }
 
     override fun registerServerCommands(handler: CommandHandler) {
-
         handler.register("tws-reload-config", "reload config file at ${Config.PATH}") {
             try {
                 config = Config.load()
@@ -184,7 +243,12 @@ class Main : Plugin() {
 
 
     override fun registerClientCommands(handler: CommandHandler) {
-        fun register(name: String, signature: String, description: String, callbalck: (Array<String>, Player) -> Unit) {
+        fun register(
+            name: String,
+            signature: String,
+            description: String,
+            callbalck: (Array<String>, Player) -> Unit
+        ) {
             handler.register(name, signature, description) { args, player: Player ->
                 if (db.isGriefer(player)) {
                     player.sendMessage("[red]you are griefer, you can not use this command")
@@ -197,7 +261,7 @@ class Main : Plugin() {
 
         register(
             "votekick",
-            "<name/#id> <reason>",
+            "<name/#id> <reason...>",
             "mark a player as griefer, this can be only undone by admin"
         ) { args, player: Player ->
 
@@ -214,9 +278,6 @@ class Main : Plugin() {
             }
             if (neededVotes % 2 == 1) neededVotes += 1
             neededVotes /= 2
-
-            // this is useless
-            if (player.sendMissingArgsMessage(args, 2)) return@register
 
             val name = args[0]
             val reason = args[1]
@@ -235,8 +296,24 @@ class Main : Plugin() {
                 return@register
             }
 
+            if (target == player) {
+                player.sendMessage("[red]you can not mark yourself")
+                return@register
+            }
+
+            if (target.admin) {
+                player.sendMessage("[red]you can not mark an admin")
+                return@register
+            }
+
             if (db.isGriefer(target)) {
                 player.sendMessage("[red]player $name is already marked")
+                return@register
+            }
+
+            if (player.admin) {
+                db.markGriefer(target)
+                player.sendMessage("[red]player $name marked")
                 return@register
             }
 
@@ -252,8 +329,6 @@ class Main : Plugin() {
             "vote for marking a griefer, admins can cancel with 'c'," +
                     " CAUTION: if players vote this down, you will be marked instead"
         ) { args, player: Player ->
-            if (player.sendMissingArgsMessage(args, 1)) return@register
-
             val vote = args[0]
 
             if (grieferSessions.isEmpty()) {
@@ -269,7 +344,7 @@ class Main : Plugin() {
                 }
 
                 try {
-                    index = max(args[1].toInt(), 1)
+                    index = min(max(args[1].toInt(), 1), grieferSessions.size)
                 } catch (e: NumberFormatException) {
                     player.sendMessage("[red]expected #id as well since there are multiple griefers")
                     return@register
@@ -282,11 +357,13 @@ class Main : Plugin() {
             val session = grieferSessions[index - 1]
             when (vote) {
                 "y" -> {
+                    session.nay.remove(player)
                     session.yea[player] = playerRank.voteWeight
                     mindustry.gen.Call.sendMessage("${player.name} voted for ${session.target.name} to be marked as griefer!")
                 }
 
                 "n" -> {
+                    session.yea.remove(player)
                     session.nay[player] = playerRank.voteWeight
                     mindustry.gen.Call.sendMessage("${player.name} voted against ${session.target.name} to be marked as griefer!")
                 }
@@ -314,12 +391,9 @@ class Main : Plugin() {
                 grieferSessions.remove(session)
                 mindustry.gen.Call.sendMessage("Vote canceled!")
             }
-
         }
 
         register("login", "<username> <password>", "login to your account") { args, player: Player ->
-            if (player.sendMissingArgsMessage(args, 2)) return@register
-
             val username = args[0]
             val password = args[1]
             val err = db.loginPlayer(player, username, password)
@@ -343,8 +417,6 @@ class Main : Plugin() {
 
         val loginSessions = mutableMapOf<Player, RegisterSession>()
         register("register", "<name> <password>", "register to your account") { args, player: Player ->
-            if (player.sendMissingArgsMessage(args, 2)) return@register
-
             val name = args[0]
             val password = args[1]
 
@@ -401,12 +473,12 @@ data class Config(
                 }
                 val new = Config(
                     hashMapOf(
-                        Rank.GRIEFER to Rank(BlockProtectionRank.Griefer, 0, true),
-                        Rank.GUEST to Rank(BlockProtectionRank.Guest, 1, false),
-                        Rank.NEWCOMER to Rank(BlockProtectionRank.Unverified, 1, false),
-                        Rank.VERIFIED to Rank(BlockProtectionRank.Member, 2, false),
-                        "dev" to Rank(BlockProtectionRank.Member, 100, true),
-                        "owner" to Rank(BlockProtectionRank.Member, 100, true),
+                        Rank.GRIEFER to Rank("pink", BlockProtectionRank.Griefer, 0, true),
+                        Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
+                        Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
+                        Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 2, false),
+                        "dev" to Rank("purple", BlockProtectionRank.Member, 100, true),
+                        "owner" to Rank("gold", BlockProtectionRank.Member, 100, true),
                     )
                 )
                 file.createNewFile()
@@ -421,6 +493,7 @@ data class Config(
 
 @Serializable
 data class Rank(
+    val color: String,
     val blockProtectionRank: BlockProtectionRank,
     val voteWeight: Int,
     val visible: Boolean,
@@ -431,6 +504,8 @@ data class Rank(
         const val VERIFIED = "verified"
         const val GRIEFER = "griefer"
     }
+
+    fun display(name: String): String = if (visible) "[$color]<$name>[]" else ""
 }
 
 @Serializable
@@ -440,3 +515,4 @@ enum class BlockProtectionRank {
     Unverified,
     Member,
 }
+
