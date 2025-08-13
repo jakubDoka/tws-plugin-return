@@ -10,12 +10,36 @@ import mindustry.mod.Plugin
 import mindustry.world.Tile
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.time.Instant
+
+fun Player.markKick(reason: String) = kick(
+    "[red]you were marked a griefer for $reason," +
+            " all actions are blocked, you can reconnect as a spectator", 0
+)
+
+fun Player.stateKick(reason: String) = kick(
+    "$reason, you can reconnect immediatelly", 0
+)
+
+fun Long.displayTime(): String {
+    val days = this / 1000 / 60 / 60 / 24
+    val hours = (this / 1000 / 60 / 60) % 24
+    val minutes = (this / 1000 / 60) % 60
+    val seconds = (this / 1000) % 60
+
+    val sb = StringBuilder()
+    if (days > 0) sb.append("${days}d")
+    if (hours > 0) sb.append("${hours}h")
+    if (minutes > 0) sb.append("${minutes}m")
+    if (seconds > 0) sb.append("${seconds}s")
+
+    return sb.toString()
+}
 
 class Main : Plugin() {
     var config = Config.load()
     var db = DbReactor(config)
     val grieferSessions = mutableListOf<MarkGrieferSession>()
-    var commandHandler: CommandHandler? = null
 
     class MarkGrieferSession(
         val target: Player,
@@ -42,6 +66,7 @@ class Main : Plugin() {
 
 
     override fun init() {
+        // HUD
         arc.util.Timer.schedule({
             val toRemove = mutableListOf<MarkGrieferSession>()
             val text = StringBuilder()
@@ -63,7 +88,8 @@ class Main : Plugin() {
             }
         }, 0f, 1f)
 
-        val minAfkPeriod = 1000 * 5
+        // AFK/PERMS tracking
+        val minAfkPeriod = 1000 * 60 * 2
         val afkMarker = "[red](afk)[]"
 
         class PlayerActivityTracker {
@@ -151,6 +177,7 @@ class Main : Plugin() {
 
         arc.Events.on(EventType.PlayEvent::class.java) { event ->
             permissionTable.clear()
+            playerActivityByUuid.clear()
         }
 
         arc.Events.on(EventType.BlockBuildBeginEvent::class.java) { event ->
@@ -184,6 +211,18 @@ class Main : Plugin() {
     }
 
     override fun registerServerCommands(handler: CommandHandler) {
+        handler.register("tws-pardon", "<online-name>", "reliefe a player from griefer status") { args ->
+            val name = args[0]
+            val player = Groups.player.find { name in it.name && db.isGriefer(it) }
+            if (player == null) {
+                print("player $name that is also a griefer is not online")
+                return@register
+            }
+
+            db.unmarkGriefer(player)
+            print("pardoned $name")
+        }
+
         handler.register("tws-reload-config", "reload config file at ${Config.PATH}") {
             try {
                 config = Config.load()
@@ -235,7 +274,7 @@ class Main : Plugin() {
 
             for (player in Groups.player) {
                 if (db.getPlayerNameByUuid(player.uuid()) == name) {
-                    player.kick("your rank changed, you can reconnect immediatelly", 0)
+                    player.stateKick("your rank changed")
                 }
             }
         }
@@ -257,6 +296,112 @@ class Main : Plugin() {
 
                 callbalck(args, player)
             }
+        }
+
+        class TestSession {
+
+            var questionIndex = 0
+            var failedQuestions = 0
+            var answerMatrix = mutableListOf<Int>()
+
+            fun generateAnswerMatrix() {
+                answerMatrix = config.testQuestions[questionIndex].answers.indices.toMutableList()
+                answerMatrix.shuffle()
+            }
+        }
+
+        // player name -> TestSession
+        val testSessions = mutableMapOf<String, TestSession>()
+        register("tws-test-start", "", "start a test session to get verified") { args, player: Player ->
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.sendMessage("[red]you are not logged in")
+                return@register
+            }
+
+            val lastFailed = db.hasFailedTestSession(name, config.testTimeout)
+            if (lastFailed != null) {
+                player.sendMessage(
+                    "[red]you have failed a test session recently, ${
+                        ((lastFailed + config.testTimeout * 1000 * 60 * 60) - System.currentTimeMillis()).displayTime()
+                    }"
+                )
+                return@register
+            }
+
+            if (testSessions[name] != null) {
+                player.sendMessage("[red]you are already in a test session")
+                return@register
+            }
+
+            testSessions[name] = TestSession()
+
+            handler.handleMessage("/tws-test-show", player)
+        }
+
+        register("tws-test-show", "", "show the current test question") { args, player: Player ->
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.sendMessage("[red]you are not logged in")
+                return@register
+            }
+
+            val session = testSessions[name] ?: run {
+                player.sendMessage("[red]no test session is running, use /tws-test to start one")
+                return@register
+            }
+
+            if (session.answerMatrix.isEmpty()) {
+                session.generateAnswerMatrix()
+            }
+
+            val question = config.testQuestions[session.questionIndex]
+            player.sendMessage("${question.question}: ${session.answerMatrix.size}")
+            for ((i, j) in session.answerMatrix.withIndex()) {
+                player.sendMessage("  ${i + 1}. ${question.answers[j]}")
+            }
+        }
+
+        register("tws-test-answer", "<answer>", "answer a test question") { args, player: Player ->
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.sendMessage("[red]you are not logged in")
+                return@register
+            }
+
+            val session = testSessions[name] ?: run {
+                player.sendMessage("[red]no test session is running, use /tws-test to start one")
+                return@register
+            }
+
+            val answer = min(max(args[0].toIntOrNull() ?: run {
+                player.sendMessage("[red]expected an answer number")
+                return@register
+            }, 1), session.answerMatrix.size) - 1
+
+            if (session.answerMatrix[answer] != 0) {
+                session.failedQuestions++
+            }
+
+            session.questionIndex++
+
+            if (session.questionIndex < config.testQuestions.size) {
+                handler.handleMessage("/tws-test-show", player)
+                return@register
+            }
+
+            player.sendMessage("[white]test session finished")
+            testSessions.remove(name)
+
+            if (session.failedQuestions != 0) {
+                player.sendMessage(
+                    "[red]you have failed ${session.failedQuestions}" +
+                            " questions, you can try again in ${config.testTimeout}"
+                )
+
+                db.addFailedTestSession(name)
+                return@register
+            }
+
+            db.setRank(name, Rank.VERIFIED)
+            player.stateKick("you are now verified")
         }
 
         register(
@@ -326,8 +471,7 @@ class Main : Plugin() {
         register(
             "vote",
             "<y/n/c> [#id]",
-            "vote for marking a griefer, admins can cancel with 'c'," +
-                    " CAUTION: if players vote this down, you will be marked instead"
+            "vote for marking a griefer, admins can cancel with 'c'"
         ) { args, player: Player ->
             val vote = args[0]
 
@@ -387,7 +531,6 @@ class Main : Plugin() {
                 grieferSessions.remove(session)
                 mindustry.gen.Call.sendMessage("${session.target.name} was marked as griefer!")
             } else if (session.nayVotes >= session.neededVotes) {
-                db.markGriefer(session.initiator)
                 grieferSessions.remove(session)
                 mindustry.gen.Call.sendMessage("Vote canceled!")
             }
@@ -444,15 +587,21 @@ class Main : Plugin() {
             }
         }
 
-        register("status", "", "check your account status") { args, player: Player ->
+        register("status", "", "check your account status")
+        { args, player: Player ->
             player.sendMessage(db.status(player))
         }
     }
 }
 
 @Serializable
+data class TestQuestion(val question: String, val answers: List<String>)
+
+@Serializable
 data class Config(
-    val ranks: HashMap<String, Rank>
+    val ranks: HashMap<String, Rank>,
+    val testQuestions: List<TestQuestion>,
+    val testTimeout: Int,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -476,10 +625,25 @@ data class Config(
                         Rank.GRIEFER to Rank("pink", BlockProtectionRank.Griefer, 0, true),
                         Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
                         Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
-                        Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 2, false),
+                        Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 1, false),
                         "dev" to Rank("purple", BlockProtectionRank.Member, 100, true),
                         "owner" to Rank("gold", BlockProtectionRank.Member, 100, true),
-                    )
+                    ),
+                    listOf(
+                        TestQuestion(
+                            "What is the capital of France?",
+                            listOf("Paris", "London", "Berlin")
+                        ),
+                        TestQuestion(
+                            "Which question is this?",
+                            listOf("2", "3", "1")
+                        ),
+                        TestQuestion(
+                            "What is the capital of Italy?",
+                            listOf("Rome", "London", "Paris")
+                        ),
+                    ),
+                    1
                 )
                 file.createNewFile()
                 file.writeText(json.encodeToString(new))
@@ -490,6 +654,7 @@ data class Config(
         }
     }
 }
+
 
 @Serializable
 data class Rank(

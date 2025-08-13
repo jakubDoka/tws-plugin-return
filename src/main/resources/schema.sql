@@ -16,3 +16,8 @@ CREATE TABLE IF NOT EXISTS griefer (
 	-- can be a uuid or ip address
 	ban_key TEXT PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS failed_test_sessions (
+	name TEXT PRIMARY KEY,
+	happened_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
