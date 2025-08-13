@@ -19,7 +19,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-const val BUG_MSG = "[red]Bug occured, please report this to the devs."
+const val BUG_MSG = "bug.msg"
 
 private class Queryes(val connection: Connection) {
     val getLogin = initStmt("SELECT * FROM login WHERE uuid = ?")
@@ -193,7 +193,7 @@ class DbReactor(val config: Config) {
         if (isGriefer(player)) {
             val griferRank = config.getRank(player, Rank.GRIEFER) ?: return BUG_MSG
             player.name = "${player.name}[${griferRank.color}]<griefer>[]"
-            return "[red]you are a griefer, you can spectate"
+            return "hello.griefer"
         }
 
         qs.getLogin.setString(1, player.uuid())
@@ -201,8 +201,7 @@ class DbReactor(val config: Config) {
 
         if (!resultSet.next()) {
             tryBanIp(player)
-            return "[yellow]You are not logged-in/registered yet," +
-                    " consider doing so with /login or /register command."
+            return "hello.guest"
         }
 
         val name = resultSet.getString("name")
@@ -227,7 +226,7 @@ class DbReactor(val config: Config) {
         val resultSet = qs.getPasswordHash.executeQuery()
         if (!resultSet.next()) {
             println("player ${player.name} is not registered but is trying to login")
-            return "You need to register first."
+            return "login.register-first"
         }
 
         val passwordHash = resultSet.getString("password_hash")
@@ -239,7 +238,7 @@ class DbReactor(val config: Config) {
         @Suppress("DEPRECATION")
         if (!hasher.verify(passwordHash, password)) {
             println("player ${name} tried to login with wrong password")
-            return "Wrong password."
+            return "login.wrong-password"
         }
 
         qs.addLogin.setString(1, player.uuid())
@@ -247,7 +246,7 @@ class DbReactor(val config: Config) {
         qs.addLogin.executeUpdate()
 
         println("player ${name} logged in")
-        player.stateKick("you logged in")
+        player.stateKick("login.success")
 
         return null
     }
@@ -255,7 +254,7 @@ class DbReactor(val config: Config) {
     fun logoutPlayer(player: Player): String? {
         qs.removeLogin.setString(1, player.uuid())
         val count = qs.removeLogin.executeUpdate()
-        if (count == 0) return "[red]You are not logged in so this does nothing!"
+        if (count == 0) return "logout.not-logged-in"
         return null
     }
 
@@ -269,7 +268,7 @@ class DbReactor(val config: Config) {
         } catch (e: SQLException) {
             println("error registering player ${name}")
             e.printStackTrace()
-            return "Your name is already used by another player."
+            return "register.already-registered"
         }
 
         println("player ${name} registered")
@@ -281,8 +280,7 @@ class DbReactor(val config: Config) {
         qs.getLogin.setString(1, player.uuid())
         var resultSet = qs.getLogin.executeQuery()
         if (!resultSet.next()) {
-            return "[yellow]You are not logged-in/registered yet," +
-                    " consider doing so with /login or /register command."
+            return player.fmt("status.not-logged-in")
         }
 
         qs.getUserByUuid.setString(1, player.uuid())
@@ -295,9 +293,7 @@ class DbReactor(val config: Config) {
         val joinedAt = resultSet.getLong("joined_at")
         val fmtJoinedAt = displayTime(Instant.ofEpochSecond(joinedAt))
 
-        return "[green]You are logged in as ${player.name}![]\n" +
-                "Your rank is ${rank}.\n" +
-                "Your joined at ${fmtJoinedAt}."
+        return player.fmt("status.listing", "name" to player.name, "rank" to rank, "joined-at" to fmtJoinedAt)
     }
 
     fun displayTime(ins: Instant): String {

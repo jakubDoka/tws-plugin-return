@@ -8,18 +8,73 @@ import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.world.Tile
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.time.Instant
 
+object Translations {
+    const val defultLocale = "en_US"
+
+    private var maps = run {
+        val url = object {}.javaClass.getResource("/translations/")
+            ?: error("translations directory not found in resources")
+
+        val conn = url.openConnection() as java.net.JarURLConnection
+        val jar = conn.jarFile
+        jar.entries().asSequence()
+            .filter { it.name.startsWith("translations/") && !it.isDirectory }
+            .associate { it ->
+                val filename = it.name.removePrefix("translations/").removeSuffix(".ini")
+                filename to jar.getInputStream(it).bufferedReader().readText()
+                    .lines().map { it.split("=", limit = 2) }
+                    .filter { it.size == 2 }
+                    .associate { it[0].trim() to it[1].trim() }
+            }
+    }
+
+    fun t(locale: String, key: String, vararg args: Pair<String, Any>): String {
+        val template = (maps[locale] ?: (maps[defultLocale] ?: error("")))[key] ?: key
+        return args.fold(template.replace("\\n", "\n")) { acc, (k, v) ->
+            acc.replace("{$k}", v.toString())
+        }
+    }
+
+    fun exists(locale: String, key: String): Boolean =
+        (maps[locale] ?: (maps[defultLocale] ?: error("")))[key] != null
+}
+
+fun sendToAll(message: String, vararg args: Pair<String, Any>) {
+    for (player in Groups.player) {
+        player.send(message, *args)
+    }
+}
+
 fun Player.markKick(reason: String) = kick(
-    "[red]you were marked a griefer for $reason," +
-            " all actions are blocked, you can reconnect as a spectator", 0
+    fmt("mark-kick", "reason" to reason), 0
 )
 
 fun Player.stateKick(reason: String) = kick(
-    "$reason, you can reconnect immediatelly", 0
+    fmt("state-kick", "reason" to fmt("state-kick.$reason")), 0
 )
+
+fun Player.fmt(message: String, vararg args: Pair<String, Any>): String =
+    Translations.t(locale, message, *args)
+
+fun Player.fmtOrDefault(message: String, default: String): String {
+    return if (Translations.exists(locale, message)) {
+        fmt(message)
+    } else {
+        default
+    }
+}
+
+fun Player.send(message: String, vararg args: Pair<String, Any>) {
+    sendMessage(fmt(message, *args))
+}
+
+fun Player.selectLocale(options: Map<String, String>): String =
+    options[locale] ?: options[Translations.defultLocale] ?: "missing translation"
 
 fun Long.displayTime(): String {
     val days = this / 1000 / 60 / 60 / 24
@@ -40,6 +95,7 @@ class Main : Plugin() {
     var config = Config.load()
     var db = DbReactor(config)
     val grieferSessions = mutableListOf<MarkGrieferSession>()
+
 
     class MarkGrieferSession(
         val target: Player,
@@ -63,7 +119,6 @@ class Main : Plugin() {
                     " (#$idx [green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s)"
         }
     }
-
 
     override fun init() {
         // HUD
@@ -139,7 +194,7 @@ class Main : Plugin() {
             { PlayerActivityTracker() }.onAction(it.player)
 
             if (db.isGriefer(it.player)) {
-                it.player.sendMessage("[red]you are griefer, all actions are blocked")
+                it.player.send("perm.griefer")
                 return@addActionFilter false
             }
 
@@ -151,9 +206,10 @@ class Main : Plugin() {
             val bp = permissionTable[tile] ?: defaultPermission
 
             if (bp.protectionRank.ordinal > playerRank.blockProtectionRank.ordinal && !bp.issuer.isAfk) {
-                it.player.sendMessage(
-                    "[red]You do not have permission to do that!" +
-                            " (required rank: ${bp.protectionRank}, yours: ${playerRank.blockProtectionRank})"
+                it.player.send(
+                    "perm.none",
+                    "required" to bp.protectionRank.name,
+                    "yours" to playerRank.blockProtectionRank.name
                 )
                 return@addActionFilter false
             }
@@ -203,9 +259,9 @@ class Main : Plugin() {
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
             val err = db.loadPlayer(event.player)
             if (err != null) {
-                event.player.sendMessage(err)
+                event.player.send(err)
             } else {
-                event.player.sendMessage("[green]You are logged in as ${event.player.name}!")
+                event.player.send("hello.user", "name" to event.player.name)
             }
         }
     }
@@ -290,7 +346,7 @@ class Main : Plugin() {
         ) {
             handler.register(name, signature, description) { args, player: Player ->
                 if (db.isGriefer(player)) {
-                    player.sendMessage("[red]you are griefer, you can not use this command")
+                    player.send("command.griefer")
                     return@register
                 }
 
@@ -298,8 +354,41 @@ class Main : Plugin() {
             }
         }
 
-        class TestSession {
+        register("help", "[page]", "show help") { args, player: Player ->
+            if (args.isNotEmpty() && args[0].toIntOrNull() == null) {
+                player.send("help.page-nan");
+                return@register;
+            }
 
+            val commandsPerPage = 6;
+            var page = if (args.isNotEmpty()) args[0].toInt() else 1;
+            val pages = ceil(handler.commandList.size.toFloat() / commandsPerPage).toInt();
+
+            page--;
+
+            if (page >= pages || page < 0) {
+                player.send("help.page-oob", "max-pages" to pages);
+                return@register;
+            }
+
+            val result = StringBuilder();
+            result.append(player.fmt("help.header", "current-page" to page + 1, "total-pages" to pages))
+            result.append("\n\n")
+            for (i in commandsPerPage * page..<min(commandsPerPage * (page + 1), handler.commandList.size)) {
+                val command = handler.commandList[i];
+                result
+                    .append("[orange] /")
+                    .append(command.text)
+                    .append("[white] ")
+                    .append(player.fmtOrDefault("${command.text}.args", command.paramText))
+                    .append("[lightgray] - ")
+                    .append(player.fmtOrDefault("${command.text}.desc", command.description))
+                    .append("\n")
+            }
+            player.sendMessage(result.toString());
+        }
+
+        class TestSession {
             var questionIndex = 0
             var failedQuestions = 0
             var answerMatrix = mutableListOf<Int>()
@@ -314,38 +403,39 @@ class Main : Plugin() {
         val testSessions = mutableMapOf<String, TestSession>()
         register("tws-test-start", "", "start a test session to get verified") { args, player: Player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.sendMessage("[red]you are not logged in")
+                player.send("tws-test.no-login")
                 return@register
             }
 
             val lastFailed = db.hasFailedTestSession(name, config.testTimeout)
             if (lastFailed != null) {
-                player.sendMessage(
-                    "[red]you have failed a test session recently, ${
-                        ((lastFailed + config.testTimeout * 1000 * 60 * 60) - System.currentTimeMillis()).displayTime()
-                    }"
+                player.send(
+                    "tws-test.start.recently-failed",
+                    "time" to ((lastFailed + config.testTimeout * 1000 * 60 * 60) -
+                            System.currentTimeMillis()).displayTime()
                 )
                 return@register
             }
 
             if (testSessions[name] != null) {
-                player.sendMessage("[red]you are already in a test session")
+                player.send("tws-test.start.already-in-session")
                 return@register
             }
 
             testSessions[name] = TestSession()
 
+            player.send("tws-test.start.start")
             handler.handleMessage("/tws-test-show", player)
         }
 
         register("tws-test-show", "", "show the current test question") { args, player: Player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.sendMessage("[red]you are not logged in")
+                player.send("tws-test.no-login")
                 return@register
             }
 
             val session = testSessions[name] ?: run {
-                player.sendMessage("[red]no test session is running, use /tws-test to start one")
+                player.send("tws-test.no-session")
                 return@register
             }
 
@@ -354,25 +444,25 @@ class Main : Plugin() {
             }
 
             val question = config.testQuestions[session.questionIndex]
-            player.sendMessage("${question.question}: ${session.answerMatrix.size}")
+            player.sendMessage("${player.selectLocale(question.question)}:")
             for ((i, j) in session.answerMatrix.withIndex()) {
-                player.sendMessage("  ${i + 1}. ${question.answers[j]}")
+                player.sendMessage("  ${i + 1}. ${player.selectLocale(question.answers[j])}")
             }
         }
 
         register("tws-test-answer", "<answer>", "answer a test question") { args, player: Player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.sendMessage("[red]you are not logged in")
+                player.send("tws-test.no-login")
                 return@register
             }
 
             val session = testSessions[name] ?: run {
-                player.sendMessage("[red]no test session is running, use /tws-test to start one")
+                player.send("tws-test.no-session")
                 return@register
             }
 
             val answer = min(max(args[0].toIntOrNull() ?: run {
-                player.sendMessage("[red]expected an answer number")
+                player.send("tws-test.answer.nan")
                 return@register
             }, 1), session.answerMatrix.size) - 1
 
@@ -387,13 +477,14 @@ class Main : Plugin() {
                 return@register
             }
 
-            player.sendMessage("[white]test session finished")
+            player.send("tws-test.answer.finished")
             testSessions.remove(name)
 
             if (session.failedQuestions != 0) {
-                player.sendMessage(
-                    "[red]you have failed ${session.failedQuestions}" +
-                            " questions, you can try again in ${config.testTimeout}"
+                player.send(
+                    "tws-test.answer.failed",
+                    "failed-questions" to session.failedQuestions,
+                    "timeout" to config.testTimeout
                 )
 
                 db.addFailedTestSession(name)
@@ -401,7 +492,7 @@ class Main : Plugin() {
             }
 
             db.setRank(name, Rank.VERIFIED)
-            player.stateKick("you are now verified")
+            player.stateKick("verified")
         }
 
         register(
@@ -411,7 +502,7 @@ class Main : Plugin() {
         ) { args, player: Player ->
 
             if (Groups.player.size() < 3) {
-                player.sendMessage("[red] need at least 3 players to votekick")
+                player.send("votekick.not-enough-players")
                 return@register
             }
 
@@ -430,35 +521,35 @@ class Main : Plugin() {
             val maxReasonLength = 64
 
             if (reason.length > maxReasonLength) {
-                player.sendMessage("[red]keep the reason short, for reference: ${reason.take(maxReasonLength)}...")
+                player.send("tws-test.start.reason-too-long", "reference" to reason.take(maxReasonLength))
                 return@register
             }
 
             val target = Groups.player.find { "#" + it.id == name || name in it.name }
 
             if (target == null) {
-                player.sendMessage("[red]player $name not found")
+                player.send("votekick.not-found", "name" to name)
                 return@register
             }
 
             if (target == player) {
-                player.sendMessage("[red]you can not mark yourself")
+                player.send("votekick.self")
                 return@register
             }
 
             if (target.admin) {
-                player.sendMessage("[red]you can not mark an admin")
+                player.send("votekick.admin")
                 return@register
             }
 
             if (db.isGriefer(target)) {
-                player.sendMessage("[red]player $name is already marked")
+                player.send("votekick.already-marked")
                 return@register
             }
 
             if (player.admin) {
                 db.markGriefer(target)
-                player.sendMessage("[red]player $name marked")
+                player.send("votekick.marked")
                 return@register
             }
 
@@ -476,21 +567,21 @@ class Main : Plugin() {
             val vote = args[0]
 
             if (grieferSessions.isEmpty()) {
-                player.sendMessage("[red]no griefers to vote for")
+                player.send("votekick.no-griefers")
                 return@register
             }
 
             var index = 1
             if (grieferSessions.size > 1) {
                 if (args.size < 2) {
-                    player.sendMessage("[red]expected #id as well since there are multiple griefers")
+                    player.send("votekick.expected-id")
                     return@register
                 }
 
                 try {
                     index = min(max(args[1].toInt(), 1), grieferSessions.size)
                 } catch (e: NumberFormatException) {
-                    player.sendMessage("[red]expected #id as well since there are multiple griefers")
+                    player.send("votekick.expected-id")
                     return@register
                 }
             }
@@ -503,18 +594,18 @@ class Main : Plugin() {
                 "y" -> {
                     session.nay.remove(player)
                     session.yea[player] = playerRank.voteWeight
-                    mindustry.gen.Call.sendMessage("${player.name} voted for ${session.target.name} to be marked as griefer!")
+                    sendToAll("vote.voted-for", "voter" to player.name, "for" to session.target.name)
                 }
 
                 "n" -> {
                     session.yea.remove(player)
                     session.nay[player] = playerRank.voteWeight
-                    mindustry.gen.Call.sendMessage("${player.name} voted against ${session.target.name} to be marked as griefer!")
+                    sendToAll("vote.voted-against", "voter" to player.name, "against" to session.target.name)
                 }
 
                 "c" -> {
                     if (!player.admin) {
-                        player.sendMessage("[red]only admins can cancel votes")
+                        player.send("vote.only-admins-cancel")
                         return@register
                     }
 
@@ -522,17 +613,17 @@ class Main : Plugin() {
                 }
 
                 else -> {
-                    player.sendMessage("[red]expected y/n/c, got $vote")
+                    player.send("vote.expected-y-n-c")
                 }
             }
 
             if (session.yeaVotes >= session.neededVotes) {
                 db.markGriefer(session.target)
                 grieferSessions.remove(session)
-                mindustry.gen.Call.sendMessage("${session.target.name} was marked as griefer!")
+                sendToAll("vote.vote-passed", "for" to session.target.name)
             } else if (session.nayVotes >= session.neededVotes) {
                 grieferSessions.remove(session)
-                mindustry.gen.Call.sendMessage("Vote canceled!")
+                sendToAll("vote.vote-canceled")
             }
         }
 
@@ -540,62 +631,57 @@ class Main : Plugin() {
             val username = args[0]
             val password = args[1]
             val err = db.loginPlayer(player, username, password)
-            if (err != null) {
-                player.sendMessage("[red]$err")
-            } else {
-                player.sendMessage("[green]Logged in as ${player.name}!")
-            }
+            if (err != null) player.send(err)
         }
 
         register("logout", "", "logout from your account") { args, player: Player ->
             val err = db.logoutPlayer(player)
             if (err != null) {
-                player.sendMessage("[red]$err")
+                player.send(err)
             } else {
-                player.sendMessage("[green]You are now logged out!")
+                player.send("logout.success")
             }
         }
 
         data class RegisterSession(val name: String, val password: String)
 
-        val loginSessions = mutableMapOf<Player, RegisterSession>()
+        val registerSessions = mutableMapOf<Player, RegisterSession>()
         register("register", "<name> <password>", "register to your account") { args, player: Player ->
             val name = args[0]
             val password = args[1]
 
-            val session = loginSessions.remove(player)
+            val session = registerSessions.remove(player)
             if (session != null) {
                 if (session.name != name) {
-                    player.sendMessage("[red] The name you reentered does not match.")
+                    player.send("register.name-mismatch")
                     return@register
                 }
 
                 if (session.password != password) {
-                    player.sendMessage("[red] The password you reentered does not match.")
+                    player.send("register.password-mismatch")
                     return@register
                 }
 
                 val err = db.registerPlayer(name, session.password)
                 if (err != null) {
-                    player.sendMessage("[red]$err")
+                    player.send(err)
                 } else {
-                    player.sendMessage("[green]Registered as ${name}! You can now login with /login!")
+                    player.send("register.success", "name" to name)
                 }
             } else {
-                loginSessions[player] = RegisterSession(name, password)
-                player.sendMessage("[yellow]Please enter your name and password again to confirm.")
+                registerSessions[player] = RegisterSession(name, password)
+                player.send("register.repeat")
             }
         }
 
-        register("status", "", "check your account status")
-        { args, player: Player ->
+        register("status", "", "check your account status") { args, player: Player ->
             player.sendMessage(db.status(player))
         }
     }
 }
 
 @Serializable
-data class TestQuestion(val question: String, val answers: List<String>)
+data class TestQuestion(val question: Map<String, String>, val answers: List<Map<String, String>>)
 
 @Serializable
 data class Config(
@@ -605,7 +691,7 @@ data class Config(
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
-            player.sendMessage("[red]BUG: your rank is corrupted, contact an admin!")
+            player.send("rank.corrupted")
             return null
         }
     }
@@ -631,16 +717,16 @@ data class Config(
                     ),
                     listOf(
                         TestQuestion(
-                            "What is the capital of France?",
-                            listOf("Paris", "London", "Berlin")
+                            mapOf("en_US" to "What is the capital of France?"),
+                            listOf(mapOf("en_Us" to "Paris"), mapOf("en_US" to "London"), mapOf("en_US" to "Berlin"))
                         ),
                         TestQuestion(
-                            "Which question is this?",
-                            listOf("2", "3", "1")
+                            mapOf("en_US" to "Which question is this?"),
+                            listOf(mapOf("en_US" to "2"), mapOf("en_US" to "3"), mapOf("en_US" to "1"))
                         ),
                         TestQuestion(
-                            "What is the capital of Italy?",
-                            listOf("Rome", "London", "Paris")
+                            mapOf("en_US" to "What is the capital of Italy?"),
+                            listOf(mapOf("en_US" to "Rome"), mapOf("en_US" to "London"), mapOf("en_US" to "Paris"))
                         ),
                     ),
                     1
