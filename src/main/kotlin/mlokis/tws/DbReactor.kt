@@ -132,7 +132,7 @@ class DbReactor(val config: Config) {
             println("error marking griefer, (could be duplicate entry)")
             e.printStackTrace()
         }
-        player.stateKick("you were marked a griefer")
+        player.stateKick("marked-griefer")
         println("marked ${player.name} as griefer")
     }
 

@@ -392,7 +392,7 @@ class Main : Plugin() {
 
             for (player in Groups.player) {
                 if (db.getPlayerNameByUuid(player.uuid()) == name) {
-                    player.stateKick("your rank changed")
+                    player.stateKick("rank-change")
                 }
             }
         }
