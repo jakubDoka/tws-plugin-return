@@ -497,6 +497,13 @@ class Main : Plugin() {
 
             val id = discordConnectionSessions.remove("$pin:$name") ?: run {
                 player.send("invalid pin")
+
+                for (key in discordConnectionSessions.keys) {
+                    if (key.endsWith(":$name")) {
+                        discordConnectionSessions.remove(key)
+                    }
+                }
+
                 return@register
             }
 
