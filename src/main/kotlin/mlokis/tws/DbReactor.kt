@@ -38,6 +38,9 @@ private class Queryes(val connection: Connection) {
     val createUser = initStmt("INSERT INTO user (name, password_hash) VALUES (?, ?)")
     val deleteUser = initStmt("DELETE FROM user WHERE name = ?")
     val getPasswordHash = initStmt("SELECT password_hash FROM user WHERE name = ?")
+    val getPlayerNameByDiscordId = initStmt("SELECT name FROM user WHERE discord_id = ?")
+    val getUserDiscordId = initStmt("SELECT discord_id FROM user WHERE name = ?")
+    val setDiscordId = initStmt("UPDATE user SET discord_id = ? WHERE name = ?")
     val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ? OR ban_key = ?")
     val markGriefer = initStmt("INSERT INTO griefer (ban_key) VALUES (?)")
     val unmarkGriefer = initStmt("DELETE FROM griefer WHERE ban_key = ? OR ban_key = ?")
@@ -70,6 +73,26 @@ class DbReactor(val config: Config) {
         }
 
         qs = Queryes(connection)
+    }
+
+    fun setDiscordId(name: String, id: String) {
+        qs.setDiscordId.setString(1, id)
+        qs.setDiscordId.setString(2, name)
+        qs.setDiscordId.executeUpdate()
+    }
+
+    fun getUserDiscordId(name: String): String? {
+        qs.getUserDiscordId.setString(1, name)
+        val resultSet = qs.getUserDiscordId.executeQuery()
+        if (resultSet.next()) return resultSet.getString("discord_id")
+        return null
+    }
+
+    fun getPlayerNameByDiscordId(id: String): String? {
+        qs.getPlayerNameByDiscordId.setString(1, id)
+        val resultSet = qs.getPlayerNameByDiscordId.executeQuery()
+        if (resultSet.next()) return resultSet.getString("name")
+        return null
     }
 
     fun addFailedTestSession(name: String) {
@@ -184,6 +207,7 @@ class DbReactor(val config: Config) {
                         }
                     }
                 } catch (e: Exception) {
+                    println("error checking vpn status: ${body}")
                     e.printStackTrace()
                 }
             }

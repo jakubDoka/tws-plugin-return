@@ -3,8 +3,10 @@ CREATE TABLE IF NOT EXISTS user (
 	password_hash TEXT NOT NULL,
 	joined_at INTEGER NOT NULL DEFAULT (unixepoch()),
 	rank TEXT NOT NULL DEFAULT "newcomer",
-	discord_name TEXT DEFAULT NULL
+	discord_id TEXT DEFAULT NULL
 );
+
+CREATE INDEX IF NOT EXISTS discord_id_index ON user (discord_id);
 
 CREATE TABLE IF NOT EXISTS login (
 	uuid TEXT PRIMARY KEY,

@@ -7,6 +7,7 @@ buildscript {
         set("sqliteJdbcVersion", "3.50.3.0")
         set("argon2Version", "2.12")
         set("kotlinxSerializationVersion", "1.9.0")
+        set("jdaVersion", "6.0.0-rc.2")
     }
 
     dependencies {
@@ -38,6 +39,7 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:${project.extra["sqliteJdbcVersion"]}")
     implementation("de.mkammerer:argon2-jvm:${project.extra["argon2Version"]}")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:${project.extra["kotlinxSerializationVersion"]}")
+    implementation("net.dv8tion:JDA:${project.extra["jdaVersion"]}")
 }
 
 tasks.shadowJar {

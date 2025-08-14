@@ -8,9 +8,18 @@ import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.world.Tile
+import net.dv8tion.jda.api.JDA
+import net.dv8tion.jda.api.JDABuilder
+import net.dv8tion.jda.api.entities.Activity
+import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
+import net.dv8tion.jda.api.events.message.MessageReceivedEvent
+import net.dv8tion.jda.api.hooks.ListenerAdapter
+import net.dv8tion.jda.api.requests.GatewayIntent
+import java.util.EnumSet
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.random.Random
 import kotlin.time.Instant
 
 object Translations {
@@ -93,9 +102,33 @@ fun Long.displayTime(): String {
 
 class Main : Plugin() {
     var config = Config.load()
-    var db = DbReactor(config)
+    val db = DbReactor(config)
     val grieferSessions = mutableListOf<MarkGrieferSession>()
+    val bot: JDA? = run {
+        JDABuilder
+            .createLight(
+                System.getenv("DISCORD_BOT_TOKEN") ?: return@run null,
+                EnumSet.of(GatewayIntent.GUILD_MESSAGES, GatewayIntent.MESSAGE_CONTENT)
+            )
+            .addEventListeners(object : ListenerAdapter() {
+                override fun onMessageReceived(event: MessageReceivedEvent) {
+                    if (event.message.channel.id == config.discordBridgeChannelId?.toString() && !event.author.isBot) {
+                        val message = DiscordMessage(event.author.id, event.author.name, event.message.contentRaw)
+                        arc.Core.app.post { forwardDiscordMessage(message) }
+                    }
+                }
+            })
+            .setActivity(Activity.playing("tws-plugin"))
+            .build()
+            .awaitReady()
+    }
 
+    // pin:name -> userId
+    val discordConnectionSessions = mutableMapOf<String, String>()
+
+    data class DiscordMessage(val senderId: String, val fallbackName: String, val message: String)
+
+    data class ChatMessage(val sender: String, val message: String)
 
     class MarkGrieferSession(
         val target: Player,
@@ -120,7 +153,17 @@ class Main : Plugin() {
         }
     }
 
+    fun forwardDiscordMessage(message: DiscordMessage) {
+        val inGameName = db.getPlayerNameByDiscordId(message.senderId)
+        if (inGameName != null) {
+            mindustry.gen.Call.sendMessage("[grey]<[][green]D[] $inGameName[grey]>:[] ${message.message}")
+        } else {
+            mindustry.gen.Call.sendMessage("[grey]<[][blue]D[] ${message.fallbackName}[grey]>:[] ${message.message}")
+        }
+    }
+
     override fun init() {
+
         // HUD
         arc.util.Timer.schedule({
             val toRemove = mutableListOf<MarkGrieferSession>()
@@ -180,10 +223,27 @@ class Main : Plugin() {
             }
         }, 0f, minAfkPeriod.toFloat() / 1000)
 
+        val channel = if (bot != null && config.discordBridgeChannelId != null) bot.getChannelById(
+            MessageChannel::class.java,
+            config.discordBridgeChannelId.toString()
+        ) else null
         mindustry.Vars.netServer.admins.addChatFilter { player, message ->
             if (player == null) return@addChatFilter message
             playerActivityByUuid.getOrPut(player.uuid())
             { PlayerActivityTracker() }.onAction(player)
+
+            if (channel != null) {
+                val name = db.getPlayerNameByUuid(player.uuid())
+                val userId = if (name != null) db.getUserDiscordId(name) else null
+                val username = if (userId != null) {
+                    bot!!.retrieveUserById(userId).queue {
+                        channel.sendMessage("[**${it.name}**]: $message").queue()
+                    }
+                } else {
+                    channel.sendMessage("[$name]: $message").queue()
+                }
+            }
+
             message
         }
 
@@ -399,9 +459,54 @@ class Main : Plugin() {
             }
         }
 
+        register("connect-discord", "<discord-user-id>", "connect with your discord account") { args, player ->
+            if (bot == null) {
+                player.send("discord bot is not running")
+                return@register
+            }
+
+            val id = args[0]
+
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("you are not logged in")
+                return@register
+            }
+
+            val pin = Random.nextInt(1000, 9999).toString()
+
+            bot.retrieveUserById(id).queue { user ->
+                user.openPrivateChannel().queue {
+                    it.sendMessage(
+                        "this is your pin: $pin, if you are not trying" +
+                                " to connect you TWS account to discord, ignore this message"
+                    ).queue()
+                }
+            }
+
+            discordConnectionSessions["$pin:$name"] = id
+            player.send("check your DMs for the pin and call /connect-discord-confirm")
+        }
+
+        register("connect-discord-confirm", "<pin>", "confirm your discord account") { args, player ->
+            val pin = args[0]
+
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("you are not logged in")
+                return@register
+            }
+
+            val id = discordConnectionSessions.remove("$pin:$name") ?: run {
+                player.send("invalid pin")
+                return@register
+            }
+
+            db.setDiscordId(name, id)
+            player.send("[green]discord account connected")
+        }
+
         // player name -> TestSession
         val testSessions = mutableMapOf<String, TestSession>()
-        register("tws-test-start", "", "start a test session to get verified") { args, player: Player ->
+        register("tws-test-start", "", "start a test session to get verified") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("tws-test.no-login")
                 return@register
@@ -428,7 +533,7 @@ class Main : Plugin() {
             handler.handleMessage("/tws-test-show", player)
         }
 
-        register("tws-test-show", "", "show the current test question") { args, player: Player ->
+        register("tws-test-show", "", "show the current test question") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("tws-test.no-login")
                 return@register
@@ -450,7 +555,7 @@ class Main : Plugin() {
             }
         }
 
-        register("tws-test-answer", "<answer>", "answer a test question") { args, player: Player ->
+        register("tws-test-answer", "<answer>", "answer a test question") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("tws-test.no-login")
                 return@register
@@ -499,7 +604,7 @@ class Main : Plugin() {
             "votekick",
             "<name/#id> <reason...>",
             "mark a player as griefer, this can be only undone by admin"
-        ) { args, player: Player ->
+        ) { args, player ->
 
             if (Groups.player.size() < 3) {
                 player.send("votekick.not-enough-players")
@@ -563,7 +668,7 @@ class Main : Plugin() {
             "vote",
             "<y/n/c> [#id]",
             "vote for marking a griefer, admins can cancel with 'c'"
-        ) { args, player: Player ->
+        ) { args, player ->
             val vote = args[0]
 
             if (grieferSessions.isEmpty()) {
@@ -627,14 +732,14 @@ class Main : Plugin() {
             }
         }
 
-        register("login", "<username> <password>", "login to your account") { args, player: Player ->
+        register("login", "<username> <password>", "login to your account") { args, player ->
             val username = args[0]
             val password = args[1]
             val err = db.loginPlayer(player, username, password)
             if (err != null) player.send(err)
         }
 
-        register("logout", "", "logout from your account") { args, player: Player ->
+        register("logout", "", "logout from your account") { args, player ->
             val err = db.logoutPlayer(player)
             if (err != null) {
                 player.send(err)
@@ -646,7 +751,7 @@ class Main : Plugin() {
         data class RegisterSession(val name: String, val password: String)
 
         val registerSessions = mutableMapOf<Player, RegisterSession>()
-        register("register", "<name> <password>", "register to your account") { args, player: Player ->
+        register("register", "<name> <password>", "register to your account") { args, player ->
             val name = args[0]
             val password = args[1]
 
@@ -674,11 +779,11 @@ class Main : Plugin() {
             }
         }
 
-        register("status", "", "check your account status") { args, player: Player ->
+        register("status", "", "check your account status") { args, player ->
             player.sendMessage(db.status(player))
         }
 
-        register("show-locale", "", "show the current locale") { args, player: Player ->
+        register("show-locale", "", "show the current locale") { args, player ->
             player.sendMessage(player.locale)
         }
     }
@@ -692,6 +797,7 @@ data class Config(
     val ranks: HashMap<String, Rank>,
     val testQuestions: List<TestQuestion>,
     val testTimeout: Int,
+    val discordBridgeChannelId: ULong?,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -733,7 +839,8 @@ data class Config(
                             listOf(mapOf("en_US" to "Rome"), mapOf("en_US" to "London"), mapOf("en_US" to "Paris"))
                         ),
                     ),
-                    1
+                    1,
+                    null
                 )
                 file.createNewFile()
                 file.writeText(json.encodeToString(new))
