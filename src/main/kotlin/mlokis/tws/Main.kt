@@ -474,6 +474,10 @@ class Main : Plugin() {
                 return@register
             }
 
+            if (discordConnectionSessions.keys.any { it.endsWith(":$name") }) {
+                player.send("use /connect-discord-confirm to confirm your discord account")
+            }
+
             val pin = Random.nextInt(1000, 9999).toString()
 
             bot.retrieveUserById(id).queue { user ->
@@ -502,11 +506,8 @@ class Main : Plugin() {
             val id = discordConnectionSessions.remove("$pin:$name") ?: run {
                 player.send("invalid pin")
 
-                for (key in discordConnectionSessions.keys) {
-                    if (key.endsWith(":$name")) {
-                        discordConnectionSessions.remove(key)
-                    }
-                }
+                val toRemove = discordConnectionSessions.keys.filter { it.endsWith(":$name") }.toList()
+                for (key in toRemove) discordConnectionSessions.remove(key)
 
                 return@register
             }
