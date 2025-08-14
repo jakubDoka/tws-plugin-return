@@ -677,6 +677,10 @@ class Main : Plugin() {
         register("status", "", "check your account status") { args, player: Player ->
             player.sendMessage(db.status(player))
         }
+
+        register("show-locale", "", "show the current locale") { args, player: Player ->
+            player.sendMessage(player.locale)
+        }
     }
 }
 
