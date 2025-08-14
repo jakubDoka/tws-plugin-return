@@ -237,10 +237,12 @@ class Main : Plugin() {
                 val userId = if (name != null) db.getUserDiscordId(name) else null
                 val username = if (userId != null) {
                     bot!!.retrieveUserById(userId).queue {
-                        channel.sendMessage("[**${it.name}**]: $message").queue()
+                        channel.sendMessage("[**${it.effectiveName}**]: $message").queue()
                     }
-                } else {
+                } else if (name != null) {
                     channel.sendMessage("[$name]: $message").queue()
+                } else {
+                    channel.sendMessage("[*${player.name}*]: $message").queue()
                 }
             }
 
@@ -486,6 +488,8 @@ class Main : Plugin() {
             discordConnectionSessions["$pin:$name"] = id
             player.send("check your DMs for the pin and call /connect-discord-confirm")
         }
+
+
 
         register("connect-discord-confirm", "<pin>", "confirm your discord account") { args, player ->
             val pin = args[0]
