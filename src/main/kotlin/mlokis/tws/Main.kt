@@ -7,6 +7,7 @@ import mindustry.game.EventType
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.mod.Plugin
+import mindustry.type.UnitType
 import mindustry.world.Tile
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
@@ -15,6 +16,7 @@ import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
+import java.util.ArrayList
 import java.util.EnumSet
 import kotlin.math.ceil
 import kotlin.math.max
@@ -23,7 +25,7 @@ import kotlin.random.Random
 import kotlin.time.Instant
 
 object Translations {
-    const val defultLocale = "en_US"
+    const val DEFAULT_LOCALE = "en_US"
 
     private var maps = run {
         val url = object {}.javaClass.getResource("/translations/")
@@ -43,14 +45,14 @@ object Translations {
     }
 
     fun t(locale: String, key: String, vararg args: Pair<String, Any>): String {
-        val template = (maps[locale] ?: (maps[defultLocale] ?: error("")))[key] ?: key
+        val template = (maps[locale] ?: (maps[DEFAULT_LOCALE] ?: error("")))[key] ?: key
         return args.fold(template.replace("\\n", "\n")) { acc, (k, v) ->
             acc.replace("{$k}", v.toString())
         }
     }
 
     fun exists(locale: String, key: String): Boolean =
-        (maps[locale] ?: (maps[defultLocale] ?: error("")))[key] != null
+        (maps[locale] ?: (maps[DEFAULT_LOCALE] ?: error("")))[key] != null
 }
 
 fun sendToAll(message: String, vararg args: Pair<String, Any>) {
@@ -64,7 +66,7 @@ fun Player.markKick(reason: String) = kick(
 )
 
 fun Player.stateKick(reason: String) = kick(
-    fmt("state-kick", "reason" to fmt("state-kick.$reason")), 0
+    fmt("states-kick", "reason" to fmt("states-kick.$reason")), 0
 )
 
 fun Player.fmt(message: String, vararg args: Pair<String, Any>): String =
@@ -83,7 +85,7 @@ fun Player.send(message: String, vararg args: Pair<String, Any>) {
 }
 
 fun Player.selectLocale(options: Map<String, String>): String =
-    options[locale] ?: options[Translations.defultLocale] ?: "missing translation"
+    options[locale] ?: options[Translations.DEFAULT_LOCALE] ?: "missing translation"
 
 fun Long.displayTime(): String {
     val days = this / 1000 / 60 / 60 / 24
@@ -102,6 +104,7 @@ fun Long.displayTime(): String {
 
 class Main : Plugin() {
     var config = Config.load()
+    val pewPew = PewPew()
     val db = DbReactor(config)
     val grieferSessions = mutableListOf<MarkGrieferSession>()
     val bot: JDA? = run {
@@ -163,6 +166,7 @@ class Main : Plugin() {
     }
 
     override fun init() {
+        pewPew.reload(config.pewPew)
 
         // HUD
         arc.util.Timer.schedule({
@@ -344,6 +348,7 @@ class Main : Plugin() {
         handler.register("tws-reload-config", "reload config file at ${Config.PATH}") {
             try {
                 config = Config.load()
+                pewPew.reload(config.pewPew)
             } catch (e: Exception) {
                 print("Error reloading config file at ${Config.PATH}")
                 e.printStackTrace()
@@ -810,6 +815,7 @@ data class Config(
     val testQuestions: List<TestQuestion>,
     val testTimeout: Int,
     val discordBridgeChannelId: ULong?,
+    val pewPew: Map<String, Map<String, PewPew.Stats>>,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -852,7 +858,12 @@ data class Config(
                         ),
                     ),
                     1,
-                    null
+                    null,
+                    mapOf(
+                        "alpha" to mapOf("copper" to PewPew.Stats.DEFAULT),
+                        "beta" to mapOf("copper" to PewPew.Stats.DEFAULT),
+                        "gamma" to mapOf("copper" to PewPew.Stats.DEFAULT),
+                    )
                 )
                 file.createNewFile()
                 file.writeText(json.encodeToString(new))
@@ -889,4 +900,5 @@ enum class BlockProtectionRank {
     Unverified,
     Member,
 }
+
 
