@@ -246,6 +246,10 @@ class DbReactor(val config: Config) {
     }
 
     fun loginPlayer(player: Player, name: String, password: String): String? {
+        if (getPlayerNameByUuid(player.uuid()) != null) {
+            return "login.already-logged-in"
+        }
+
         qs.getPasswordHash.setString(1, name)
         val resultSet = qs.getPasswordHash.executeQuery()
         if (!resultSet.next()) {

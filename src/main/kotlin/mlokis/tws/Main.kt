@@ -66,7 +66,7 @@ fun Player.markKick(reason: String) = kick(
 )
 
 fun Player.stateKick(reason: String) = kick(
-    fmt("states-kick", "reason" to fmt("states-kick.$reason")), 0
+    fmt("state-kick", "reason" to fmt("states-kick.$reason")), 0
 )
 
 fun Player.fmt(message: String, vararg args: Pair<String, Any>): String =
