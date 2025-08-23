@@ -7,8 +7,10 @@ import mindustry.content.Items
 import mindustry.content.UnitTypes
 import mindustry.entities.Effect
 import mindustry.entities.bullet.BulletType
+import mindustry.content.Blocks
 import mindustry.type.Item
 import mindustry.type.UnitType
+import mindustry.world.blocks.defense.turrets.ItemTurret
 
 object Util {
 
@@ -39,12 +41,28 @@ object Util {
 
     fun item(name: String): Item? = property(name, Items::class.java) as? Item?
 
-    fun unitBullet(ptr: String, unit: UnitType): BulletType {
+    fun unitOrTurretBullet(ptr: String, unit: UnitType): BulletType {
         var ut = unit
         val parts = ptr.split("-")
         if (parts.size != 2) {
             error("the unit bullet has to be unit name, and weapon index separated by '-'")
         }
+
+        val turret = property(parts[0], Blocks::class.java)
+        if (turret is ItemTurret) {
+            val item = item(parts[1]) ?: error(
+                "item '${parts[1]}' does not exist, allowed items : ${
+                    propertyNameList(Items::class.java)
+                }"
+            )
+
+            return turret.ammoTypes.get(item) ?: error(
+                "item '${parts[1]}' does not have ammo type for turret '${parts[0]}', available items are: ${
+                    turret.ammoTypes.joinToString(", ") { it.key.name }
+                }"
+            )
+        }
+
         if (parts[0] != "self") {
             ut = unit(parts[0]) ?: error(
                 "unit '${parts[0]}' does not exist, allowed unists : ${
@@ -52,12 +70,13 @@ object Util {
                 }"
             )
         }
+
         if (parts[1].toUIntOrNull() == null) {
             error("cannot parse ${parts[1]} to integer")
         }
 
         val idx = parts[1].toInt() - 1
-        if (idx >= ut.weapons.size || idx < 0) {
+        if (idx < 0 || idx >= ut.weapons.size) {
             error("the maximal weapon is ${ut.weapons.size} and min is 1, you entered ${parts[1]}")
         }
 
@@ -67,8 +86,7 @@ object Util {
     fun property(name: String, target: Class<*>, obj: Any? = null): Any? = try {
         val field = target.getDeclaredField(name)
         field.get(obj)
-    } catch (e: Exception) {
-        e.printStackTrace()
+    } catch (_: Exception) {
         null
     }
 

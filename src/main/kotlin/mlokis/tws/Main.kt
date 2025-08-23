@@ -445,7 +445,7 @@ class Main : Plugin() {
             return files;
         }
 
-        register("list-maps", "", "list all maps you can switch to") { args, player ->
+        register("list-maps", "[page]", "list all maps you can switch to") { args, player ->
             val maps = Vars.maps.all().map { it.name() }
 
             val commandsPerPage = 10;
@@ -492,12 +492,12 @@ class Main : Plugin() {
         }
 
         register("switch-map", "<#map-id/map-name>", "start a vote to switch to a map") { args, player ->
-            val map_id = args[0]
+            val mapId = args[0]
             val allMaps = Vars.maps.all()
 
             val map: mindustry.maps.Map
-            if (map_id.startsWith("#")) {
-                val id = map_id.substring(1).toIntOrNull() ?: run {
+            if (mapId.startsWith("#")) {
+                val id = mapId.substring(1).toIntOrNull() ?: run {
                     player.send("switch-map.id-nan")
                     return@register
                 }

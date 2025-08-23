@@ -16,11 +16,8 @@ import mindustry.gen.Unit
 import mindustry.gen.Groups
 import mindustry.type.Item
 import mindustry.type.UnitType
-import mindustry.type.Weapon
-import java.io.File
 import java.lang.Exception
 import java.util.*
-import java.util.function.Consumer
 
 
 class PewPew {
@@ -85,7 +82,7 @@ class PewPew {
     class Weapon(val stats: Stats, ut: UnitType? = null, name: String = "ambiguos") {
         var bullet: BulletType = try {
             if ("-" in stats.bullet) {
-                Util.unitBullet(stats.bullet, ut!!)
+                Util.unitOrTurretBullet(stats.bullet, ut!!)
             } else {
                 Util.bullet(stats.bullet)
                     ?: error("weapon '${stats.bullet}' does not exist, these exist: ${Util.propertyNameList(Bullets::class.java)}")
