@@ -6,6 +6,7 @@ import arc.math.geom.Vec2
 import arc.struct.Seq
 import arc.util.Time
 import mindustry.content.Bullets
+import mindustry.content.Items
 import mindustry.content.UnitTypes
 import mindustry.entities.bullet.BulletType
 import mindustry.game.EventType
@@ -68,13 +69,16 @@ class PewPew {
         val bullet: String,
         val inaccuracy: Float,
         val damageMultiplier: Float,
+        val speedMultiplier: Float,
+        val lifetimeMultiplier: Float,
+        val burstSpacing: Float,
         val reload: Float,
         val bulletsPerShot: Int,
         val ammoMultiplier: Int,
         val itemsPerScoop: Int,
     ) {
         companion object {
-            val DEFAULT = Stats("gamma-1", 2f, 1f, .3f, 2, 4, 1)
+            val DEFAULT = Stats("gamma-1", 2f, 1f, .3f, 1f, 1f, 0f, 2, 4, 1)
         }
     }
 
@@ -146,8 +150,8 @@ class PewPew {
                     pos.x, pos.y,
                     dir + Mathf.range(-stats.inaccuracy, stats.inaccuracy),  // apply inaccuracy
                     stats.damageMultiplier * bullet.damage,
-                    velLen,
-                    life
+                    velLen * stats.speedMultiplier,
+                    life * stats.lifetimeMultiplier
                 )
             }
         }
@@ -172,18 +176,28 @@ class PewPew {
         }
     }
 
-    fun reload(config: Map<String, Map<String, PewPew.Stats>>) {
+    fun reload(config: PewPewConfig) {
         weaponSets.clear()
         try {
-            for ((k, set) in config) {
+            for ((k, set) in config.links) {
                 val unit =
                     Util.unit(k)
                         ?: throw error("unit '$k' does not exits ${Util.propertyNameList(UnitTypes::class.java)}")
                 if (unit.weapons.isEmpty) throw error("unit '$k' has no weapons thus it cannot hold any extra")
                 val map = HashMap<Item, Weapon>()
                 for ((i, s) in set) {
-                    val stats = s
-                    val item = Util.item(i) ?: throw error("unit '$k' contains unknown item '$i'")
+                    val item = Util.item(i) ?: throw error(
+                        "unit '$k' contains unknown item '$i', valud items are ${
+                            Util.propertyNameList(
+                                Items::class.java
+                            )
+                        }"
+                    )
+                    val stats = config.def[s]
+                        ?: throw error(
+                            "unit '$k' contains undefined link under '$i'," +
+                                    " it should be contained in 'def' field"
+                        )
                     map[item] = Weapon(stats, unit, "$k-$i")
                 }
                 weaponSets[unit] = map

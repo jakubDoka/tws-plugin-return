@@ -37,7 +37,7 @@ object Util {
 
     fun bullet(name: String): BulletType? = property(name, Bullets::class.java) as? BulletType?
 
-    fun item(name: String): Item? = itemList().find { it.name == name }
+    fun item(name: String): Item? = property(name, Items::class.java) as? Item?
 
     fun unitBullet(ptr: String, unit: UnitType): BulletType {
         var ut = unit
@@ -72,14 +72,6 @@ object Util {
         null
     }
 
-
-    private lateinit var items: List<Item>
-    fun itemList(): List<Item> {
-        if (!this::items.isInitialized) {
-            items = propertyList(Items::class.java).filter { it is Item }.map { it as Item }
-        }
-        return items
-    }
 
     fun propertyList(target: Class<*>): List<Any> =
         target.declaredFields.map { property(it.name, target)!! }

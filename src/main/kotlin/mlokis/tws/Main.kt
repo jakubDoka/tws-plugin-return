@@ -9,6 +9,9 @@ import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.type.UnitType
 import mindustry.world.Tile
+import mindustry.Vars
+import mindustry.net.WorldReloader
+import mindustry.game.Gamemode
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
@@ -106,7 +109,7 @@ class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
     val db = DbReactor(config)
-    val grieferSessions = mutableListOf<MarkGrieferSession>()
+    val voteSessions = mutableListOf<VoteSession>()
     val bot: JDA? = run {
         JDABuilder
             .createLight(
@@ -133,15 +136,24 @@ class Main : Plugin() {
 
     data class ChatMessage(val sender: String, val message: String)
 
-    class MarkGrieferSession(
-        val target: Player,
-        val neededVotes: Int,
-        val initiator: Player,
-        val reason: String,
-    ) {
-        var yea = mutableMapOf<Player, Int>()
-        var nay = mutableMapOf<Player, Int>()
+    inner abstract class VoteSession(val initiator: Player) {
+        val yea = mutableMapOf<Player, Int>()
+        val nay = mutableMapOf<Player, Int>()
         var timeRemining = 60 * 2
+        val neededVotes: Int
+
+        init {
+            var needed = 0
+            for (player in Groups.player) {
+                val rank = db.getRank(player)
+                val rankObj = config.getRank(player, rank) ?: continue
+                needed += rankObj.voteWeight
+            }
+            if (needed % 2 == 1) needed += 1
+            needed /= 2
+
+            neededVotes = needed
+        }
 
         val yeaVotes: Int
             get() = yea.values.fold(0) { acc, weight -> acc + weight }
@@ -149,12 +161,18 @@ class Main : Plugin() {
         val nayVotes: Int
             get() = nay.values.fold(0) { acc, weight -> acc + weight }
 
+        abstract val translationKey: String
+
+        abstract fun onDisplay(): String
+
+        abstract fun onPass()
+
         fun display(idx: Int): String {
-            return "${initiator.name}[] wants to mark [pink]${target.name}[] a griefer" +
-                    " because [yellow]${reason}[], [yellow]${neededVotes}[] votes needed" +
+            return "${initiator.name}[] wants to ${onDisplay()}, [yellow]${neededVotes}[] votes needed" +
                     " (#$idx [green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s)"
         }
     }
+
 
     fun forwardDiscordMessage(message: DiscordMessage) {
         val inGameName = db.getPlayerNameByDiscordId(message.senderId)
@@ -170,9 +188,9 @@ class Main : Plugin() {
 
         // HUD
         arc.util.Timer.schedule({
-            val toRemove = mutableListOf<MarkGrieferSession>()
+            val toRemove = mutableListOf<VoteSession>()
             val text = StringBuilder()
-            for ((i, session) in grieferSessions.withIndex()) {
+            for ((i, session) in voteSessions.withIndex()) {
                 text.append(session.display(i))
                 text.append("\n")
 
@@ -181,7 +199,7 @@ class Main : Plugin() {
                     toRemove.add(session)
                 }
             }
-            grieferSessions.removeAll(toRemove)
+            voteSessions.removeAll(toRemove)
 
             if (text.isEmpty()) {
                 mindustry.gen.Call.hideHudText()
@@ -316,7 +334,7 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.PlayerLeave::class.java) { event ->
-            for (session in grieferSessions) {
+            for (session in voteSessions) {
                 session.nay.remove(event.player)
                 session.yea.remove(event.player)
             }
@@ -421,6 +439,87 @@ class Main : Plugin() {
             }
         }
 
+        fun getMapList(): List<String> {
+            val dir = java.io.File("config/maps")
+            val files = dir.listFiles()?.map { it.name } ?: emptyList()
+            return files;
+        }
+
+        register("list-maps", "", "list all maps you can switch to") { args, player ->
+            val maps = Vars.maps.all().map { it.name() }
+
+            val commandsPerPage = 10;
+            var page = if (args.isNotEmpty()) args[0].toInt() else 1;
+            val pages = ceil(maps.size.toFloat() / commandsPerPage).toInt();
+
+            page--;
+
+            if (page !in 0..<pages) {
+                player.send("list-maps.page-oob", "max-pages" to pages);
+                return@register;
+            }
+
+            val result = StringBuilder();
+            result.append(player.fmt("list-maps.header", "current-page" to page + 1, "total-pages" to pages))
+            result.append("\n\n")
+            for (i in commandsPerPage * page..<min(commandsPerPage * (page + 1), handler.commandList.size)) {
+                val command = handler.commandList[i];
+                result.append("[yellow]#${i + 1}[]: ${maps[i]}\n")
+            }
+            player.sendMessage(result.toString());
+        }
+
+        class SwitchMapSession(
+            initiator: Player,
+            val map: mindustry.maps.Map,
+        ) : VoteSession(initiator) {
+            override val translationKey = "map"
+
+            override fun onDisplay(): String = "change map to [yellow]${map.name()}[] (and end current game)"
+
+            override fun onPass() {
+                val reload = WorldReloader()
+
+                reload.begin()
+
+
+                Vars.world.loadMap(map, map.applyRules(Gamemode.survival))
+                Vars.state.rules = Vars.state.map.applyRules(Gamemode.survival)
+                Vars.logic.play()
+
+                reload.end()
+            }
+        }
+
+        register("switch-map", "<#map-id/map-name>", "start a vote to switch to a map") { args, player ->
+            val map_id = args[0]
+            val allMaps = Vars.maps.all()
+
+            val map: mindustry.maps.Map
+            if (map_id.startsWith("#")) {
+                val id = map_id.substring(1).toIntOrNull() ?: run {
+                    player.send("switch-map.id-nan")
+                    return@register
+                }
+
+                if (id !in 1..allMaps.size) {
+                    player.send("switch-map.id-oob", "max-id" to allMaps.size)
+                    return@register
+                }
+
+                map = allMaps[id - 1]
+            } else {
+                map = Vars.maps.byName(args[0]) ?: run {
+                    player.send("switch-map.map-not-found")
+                    return@register
+                }
+            }
+
+            voteSessions.add(SwitchMapSession(player, map))
+
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
+        }
+
         register("help", "[page]", "show help") { args, player: Player ->
             if (args.isNotEmpty() && args[0].toIntOrNull() == null) {
                 player.send("help.page-nan");
@@ -433,7 +532,7 @@ class Main : Plugin() {
 
             page--;
 
-            if (page >= pages || page < 0) {
+            if (page !in 0..<pages) {
                 player.send("help.page-oob", "max-pages" to pages);
                 return@register;
             }
@@ -443,14 +542,11 @@ class Main : Plugin() {
             result.append("\n\n")
             for (i in commandsPerPage * page..<min(commandsPerPage * (page + 1), handler.commandList.size)) {
                 val command = handler.commandList[i];
-                result
-                    .append("[orange] /")
-                    .append(command.text)
-                    .append("[white] ")
-                    .append(player.fmtOrDefault("${command.text}.args", command.paramText))
-                    .append("[lightgray] - ")
-                    .append(player.fmtOrDefault("${command.text}.desc", command.description))
-                    .append("\n")
+                result.append(
+                    "[orange] /${command.text}[white] ${
+                        player.fmtOrDefault("${command.text}.args", command.paramText)
+                    } - ${player.fmtOrDefault("${command.text}.desc", command.description)}\n"
+                )
             }
             player.sendMessage(result.toString());
         }
@@ -474,6 +570,11 @@ class Main : Plugin() {
 
             val id = args[0]
 
+            if (id.toULongOrNull() == null) {
+                player.send("expected a discord user id (which is a number)")
+                return@register
+            }
+
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("you are not logged in")
                 return@register
@@ -485,20 +586,26 @@ class Main : Plugin() {
 
             val pin = Random.nextInt(1000, 9999).toString()
 
-            bot.retrieveUserById(id).queue { user ->
+            bot.retrieveUserById(id).queue({ user ->
                 user.openPrivateChannel().queue {
                     it.sendMessage(
                         "this is your pin: $pin, if you are not trying" +
                                 " to connect you TWS account to discord, ignore this message"
                     ).queue()
+
+                    arc.Core.app.post {
+                        discordConnectionSessions["$pin:$name"] = id
+                        player.send("check your DMs for the pin and call /connect-discord-confirm")
+                    }
                 }
-            }
+            }, { e ->
+                arc.Core.app.post {
+                    player.send("cant find user with id: $id, reason: ${e.message}")
+                    e.printStackTrace()
+                }
+            })
 
-            discordConnectionSessions["$pin:$name"] = id
-            player.send("check your DMs for the pin and call /connect-discord-confirm")
         }
-
-
 
         register("connect-discord-confirm", "<pin>", "confirm your discord account") { args, player ->
             val pin = args[0]
@@ -531,12 +638,14 @@ class Main : Plugin() {
 
             val lastFailed = db.hasFailedTestSession(name, config.testTimeout)
             if (lastFailed != null) {
-                player.send(
-                    "tws-test.start.recently-failed",
-                    "time" to ((lastFailed + config.testTimeout * 1000 * 60 * 60) -
-                            System.currentTimeMillis()).displayTime()
-                )
-                return@register
+                val lastFailedTime = lastFailed + config.testTimeout * 1000 * 60 * 60
+                if (System.currentTimeMillis() < lastFailedTime) {
+                    player.send(
+                        "tws-test.start.recently-failed",
+                        "time" to ((lastFailedTime - System.currentTimeMillis())).displayTime()
+                    )
+                    return@register
+                }
             }
 
             if (testSessions[name] != null) {
@@ -617,6 +726,18 @@ class Main : Plugin() {
             player.stateKick("verified")
         }
 
+        class MarkGrieferSession(
+            initiator: Player,
+            val target: Player,
+            val reason: String,
+        ) : VoteSession(initiator) {
+            override val translationKey = "griefer"
+
+            override fun onDisplay(): String = "mark [pink]${target.name}[] a griefer because [yellow]${reason}[]"
+
+            override fun onPass() = db.markGriefer(target)
+        }
+
         register(
             "votekick",
             "<name/#id> <reason...>",
@@ -627,15 +748,6 @@ class Main : Plugin() {
                 player.send("votekick.not-enough-players")
                 return@register
             }
-
-            var neededVotes = 0
-            for (player in Groups.player) {
-                val rank = db.getRank(player)
-                val rankObj = config.getRank(player, rank) ?: continue
-                neededVotes += rankObj.voteWeight
-            }
-            if (neededVotes % 2 == 1) neededVotes += 1
-            neededVotes /= 2
 
             val name = args[0]
             val reason = args[1]
@@ -675,10 +787,9 @@ class Main : Plugin() {
                 return@register
             }
 
-            val session = MarkGrieferSession(target, neededVotes, player, reason)
-            grieferSessions.add(session)
+            voteSessions.add(MarkGrieferSession(player, target, reason))
 
-            handler.handleMessage("/vote y #${grieferSessions.size}", player)
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
         register(
@@ -688,20 +799,20 @@ class Main : Plugin() {
         ) { args, player ->
             val vote = args[0]
 
-            if (grieferSessions.isEmpty()) {
-                player.send("votekick.no-griefers")
+            if (voteSessions.isEmpty()) {
+                player.send("votekick.no-sessions")
                 return@register
             }
 
             var index = 1
-            if (grieferSessions.size > 1) {
+            if (voteSessions.size > 1) {
                 if (args.size < 2) {
                     player.send("votekick.expected-id")
                     return@register
                 }
 
                 try {
-                    index = min(max(args[1].toInt(), 1), grieferSessions.size)
+                    index = min(max(args[1].toInt(), 1), voteSessions.size)
                 } catch (e: NumberFormatException) {
                     player.send("votekick.expected-id")
                     return@register
@@ -711,18 +822,26 @@ class Main : Plugin() {
             val playerRankName = db.getRank(player)
             val playerRank = config.getRank(player, playerRankName) ?: return@register
 
-            val session = grieferSessions[index - 1]
+            val session = voteSessions[index - 1]
             when (vote) {
                 "y" -> {
                     session.nay.remove(player)
                     session.yea[player] = playerRank.voteWeight
-                    sendToAll("vote.voted-for", "voter" to player.name, "for" to session.target.name)
+                    sendToAll(
+                        "vote.voted-for",
+                        "voter" to player.name,
+                        "for" to session.onDisplay()
+                    )
                 }
 
                 "n" -> {
                     session.yea.remove(player)
                     session.nay[player] = playerRank.voteWeight
-                    sendToAll("vote.voted-against", "voter" to player.name, "against" to session.target.name)
+                    sendToAll(
+                        "vote.voted-against",
+                        "voter" to player.name,
+                        "against" to session.onDisplay()
+                    )
                 }
 
                 "c" -> {
@@ -731,7 +850,7 @@ class Main : Plugin() {
                         return@register
                     }
 
-                    grieferSessions.remove(session)
+                    voteSessions.remove(session)
                 }
 
                 else -> {
@@ -740,11 +859,11 @@ class Main : Plugin() {
             }
 
             if (session.yeaVotes >= session.neededVotes) {
-                db.markGriefer(session.target)
-                grieferSessions.remove(session)
-                sendToAll("vote.vote-passed", "for" to session.target.name)
+                session.onPass()
+                voteSessions.remove(session)
+                sendToAll("vote.vote-passed", "for" to session.onDisplay())
             } else if (session.nayVotes >= session.neededVotes) {
-                grieferSessions.remove(session)
+                voteSessions.remove(session)
                 sendToAll("vote.vote-canceled")
             }
         }
@@ -810,12 +929,15 @@ class Main : Plugin() {
 data class TestQuestion(val question: Map<String, String>, val answers: List<Map<String, String>>)
 
 @Serializable
+data class PewPewConfig(val def: Map<String, PewPew.Stats>, val links: Map<String, Map<String, String>>)
+
+@Serializable
 data class Config(
     val ranks: HashMap<String, Rank>,
     val testQuestions: List<TestQuestion>,
     val testTimeout: Int,
     val discordBridgeChannelId: ULong?,
-    val pewPew: Map<String, Map<String, PewPew.Stats>>,
+    val pewPew: PewPewConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -859,10 +981,15 @@ data class Config(
                     ),
                     1,
                     null,
-                    mapOf(
-                        "alpha" to mapOf("copper" to PewPew.Stats.DEFAULT),
-                        "beta" to mapOf("copper" to PewPew.Stats.DEFAULT),
-                        "gamma" to mapOf("copper" to PewPew.Stats.DEFAULT),
+                    PewPewConfig(
+                        mapOf(
+                            "copper-gun" to PewPew.Stats.DEFAULT,
+                        ),
+                        mapOf(
+                            "alpha" to mapOf("copper" to "copper-gun"),
+                            "beta" to mapOf("copper" to "copper-gun"),
+                            "gamma" to mapOf("copper" to "copper-gun"),
+                        )
                     )
                 )
                 file.createNewFile()
