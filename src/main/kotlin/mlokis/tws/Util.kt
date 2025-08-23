@@ -11,6 +11,7 @@ import mindustry.content.Blocks
 import mindustry.type.Item
 import mindustry.type.UnitType
 import mindustry.world.blocks.defense.turrets.ItemTurret
+import mindustry.world.blocks.defense.turrets.PowerTurret
 
 object Util {
 
@@ -44,11 +45,16 @@ object Util {
     fun unitOrTurretBullet(ptr: String, unit: UnitType): BulletType {
         var ut = unit
         val parts = ptr.split("-")
+
+        val turret = property(parts[0], Blocks::class.java)
+        if (turret is PowerTurret) {
+            return turret.shootType;
+        }
+
         if (parts.size != 2) {
             error("the unit bullet has to be unit name, and weapon index separated by '-'")
         }
 
-        val turret = property(parts[0], Blocks::class.java)
         if (turret is ItemTurret) {
             val item = item(parts[1]) ?: error(
                 "item '${parts[1]}' does not exist, allowed items : ${
