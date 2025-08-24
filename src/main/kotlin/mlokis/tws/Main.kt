@@ -110,6 +110,7 @@ class Main : Plugin() {
     val pewPew = PewPew()
     val db = DbReactor(config)
     val voteSessions = mutableListOf<VoteSession>()
+    val discordCommands = CommandHandler(config.discord.prefix)
     val bot: JDA? = run {
         JDABuilder
             .createLight(
@@ -118,15 +119,21 @@ class Main : Plugin() {
             )
             .addEventListeners(object : ListenerAdapter() {
                 override fun onMessageReceived(event: MessageReceivedEvent) {
-                    if (event.message.channel.id == config.discordBridgeChannelId?.toString() && !event.author.isBot) {
+                    if (event.message.channel.id == config.discord.bridgeChannelId?.toString() && !event.author.isBot) {
                         val message = DiscordMessage(event.author.id, event.author.name, event.message.contentRaw)
                         arc.Core.app.post { forwardDiscordMessage(message) }
                     }
+
+                    tryHandleDiscordCommand(event)
                 }
             })
             .setActivity(Activity.playing("tws-plugin"))
             .build()
             .awaitReady()
+    }
+
+    init {
+        registerDiscordCommands(discordCommands)
     }
 
     // pin:name -> userId
@@ -182,6 +189,44 @@ class Main : Plugin() {
             mindustry.gen.Call.sendMessage("[grey]<[][blue]D[] ${message.fallbackName}[grey]>:[] ${message.message}")
         }
     }
+
+    fun tryHandleDiscordCommand(event: MessageReceivedEvent) {
+        if (event.author.isBot) return
+
+        if (!event.message.contentRaw.startsWith(config.discord.prefix)) return
+
+        if (config.discord.commandsChannelId != null &&
+            event.message.channel.id != config.discord.commandsChannelId.toString()
+        ) {
+            event.message.channel.sendMessage("wrong channel for commands, use <#${config.discord.commandsChannelId}>")
+            return
+        }
+
+
+        arc.Core.app.post {
+            val res = discordCommands.handleMessage(event.message.contentRaw, event)
+
+            when (res.type) {
+                CommandHandler.ResponseType.fewArguments -> {
+                    event.message.channel.sendMessage("too few arguments: **${discordCommands.prefix}${res.command.text}** *${res.command.paramText}*")
+                        .queue()
+                }
+
+                CommandHandler.ResponseType.manyArguments -> {
+                    event.message.channel.sendMessage("too many arguments: **${discordCommands.prefix}${res.command.text}** *${res.command.paramText}*")
+                        .queue()
+                }
+
+                CommandHandler.ResponseType.unknownCommand -> {
+                    event.message.channel.sendMessage("unknown command, use **${discordCommands.prefix}help**").queue()
+                }
+
+                CommandHandler.ResponseType.noCommand -> error("should not happen")
+                CommandHandler.ResponseType.valid -> {}
+            }
+        }
+    }
+
 
     override fun init() {
         pewPew.reload(config.pewPew)
@@ -245,9 +290,9 @@ class Main : Plugin() {
             }
         }, 0f, minAfkPeriod.toFloat() / 1000)
 
-        val channel = if (bot != null && config.discordBridgeChannelId != null) bot.getChannelById(
+        val channel = if (bot != null && config.discord.bridgeChannelId != null) bot.getChannelById(
             MessageChannel::class.java,
-            config.discordBridgeChannelId.toString()
+            config.discord.bridgeChannelId.toString()
         ) else null
         mindustry.Vars.netServer.admins.addChatFilter { player, message ->
             if (player == null) return@addChatFilter message
@@ -347,6 +392,33 @@ class Main : Plugin() {
             } else {
                 event.player.send("hello.user", "name" to event.player.name)
             }
+        }
+    }
+
+    fun registerDiscordCommands(handler: CommandHandler) {
+        handler.register("help", "show help") { args, event: MessageReceivedEvent ->
+            val builder = StringBuilder("Commands:\n")
+            for (command in handler.commandList) {
+                builder.append("**${handler.prefix}${command.text}**")
+                if (command.paramText.isNotEmpty()) {
+                    builder.append(" *${command.paramText}*")
+                }
+                builder.append(" - ${command.description}\n")
+            }
+            event.channel.sendMessage(builder.toString()).queue()
+        }
+
+        handler.register("game-status", "check the status of the game") { args, event: MessageReceivedEvent ->
+            event.channel.sendMessage(
+                "" +
+                        "playing: **${Vars.state.rules.mode().name}**\n" +
+                        "map: **${Vars.state.map.name()}**\n" +
+                        "players: **${Groups.player.size()}**\n" +
+                        if (Vars.state.rules.mode() == Gamemode.survival)
+                            "wave: **${Vars.state.wave}**\n"
+                        else
+                            ""
+            ).queue()
         }
     }
 
@@ -932,11 +1004,18 @@ data class TestQuestion(val question: Map<String, String>, val answers: List<Map
 data class PewPewConfig(val def: Map<String, PewPew.Stats>, val links: Map<String, Map<String, String>>)
 
 @Serializable
+data class DiscordConfig(
+    val bridgeChannelId: ULong?,
+    val commandsChannelId: ULong?,
+    val prefix: String,
+)
+
+@Serializable
 data class Config(
     val ranks: HashMap<String, Rank>,
     val testQuestions: List<TestQuestion>,
     val testTimeout: Int,
-    val discordBridgeChannelId: ULong?,
+    val discord: DiscordConfig,
     val pewPew: PewPewConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
@@ -980,7 +1059,7 @@ data class Config(
                         ),
                     ),
                     1,
-                    null,
+                    DiscordConfig(null, null, "!"),
                     PewPewConfig(
                         mapOf(
                             "copper-gun" to PewPew.Stats.DEFAULT,
