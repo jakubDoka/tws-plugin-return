@@ -1,3 +1,5 @@
+@file:Suppress("RedundantLabelWarning")
+
 package mlokis.tws
 
 import arc.util.CommandHandler
@@ -12,6 +14,7 @@ import mindustry.world.Tile
 import mindustry.Vars
 import mindustry.net.WorldReloader
 import mindustry.game.Gamemode
+import mindustry.net.Administration
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
@@ -47,7 +50,7 @@ object Translations {
             }
     }
 
-    fun t(locale: String, key: String, vararg args: Pair<String, Any>): String {
+    fun t(locale: String, key: String, vararg args: Pair<String, Any?>): String {
         val template = (maps[locale] ?: (maps[DEFAULT_LOCALE] ?: error("")))[key] ?: key
         return args.fold(template.replace("\\n", "\n")) { acc, (k, v) ->
             acc.replace("{$k}", v.toString())
@@ -72,7 +75,7 @@ fun Player.stateKick(reason: String) = kick(
     fmt("state-kick", "reason" to fmt("states-kick.$reason")), 0
 )
 
-fun Player.fmt(message: String, vararg args: Pair<String, Any>): String =
+fun Player.fmt(message: String, vararg args: Pair<String, Any?>): String =
     Translations.t(locale, message, *args)
 
 fun Player.fmtOrDefault(message: String, default: String): String {
@@ -83,7 +86,7 @@ fun Player.fmtOrDefault(message: String, default: String): String {
     }
 }
 
-fun Player.send(message: String, vararg args: Pair<String, Any>) {
+fun Player.send(message: String, vararg args: Pair<String, Any?>) {
     sendMessage(fmt(message, *args))
 }
 
@@ -272,9 +275,15 @@ class Main : Plugin() {
 
         class TilePermission(var protectionRank: BlockProtectionRank, var issuer: PlayerActivityTracker)
 
+        class Interaction(val playerName: String, val action: Administration.ActionType) {
+            fun display(tile: Tile, player: Player): String =
+                "[yellow]${playerName}[] was last to perform [orange]${action.name}[] here"
+        }
+
         val defaultPermission = TilePermission(BlockProtectionRank.Guest, PlayerActivityTracker())
         val playerActivityByUuid = mutableMapOf<String, PlayerActivityTracker>()
         val permissionTable = mutableMapOf<Tile, TilePermission>()
+        val interactions = mutableMapOf<Tile, Interaction>()
 
         arc.util.Timer.schedule({
             val toRemove = mutableListOf<String>()
@@ -348,6 +357,8 @@ class Main : Plugin() {
                 permissionTable.remove(tile)
             }
 
+            interactions[tile] = Interaction(it.player.name, it.type)
+
             return@addActionFilter true
         }
 
@@ -359,12 +370,6 @@ class Main : Plugin() {
             if (event.breaking) {
                 permissionTable.remove(event.tile)
             }
-        }
-
-        arc.Events.on(EventType.PlayEvent::class.java) { event ->
-            permissionTable.clear()
-            playerActivityByUuid.clear()
-            gameStartTime = System.currentTimeMillis()
         }
 
         arc.Events.on(EventType.BlockBuildBeginEvent::class.java) { event ->
@@ -380,12 +385,6 @@ class Main : Plugin() {
             }
         }
 
-        arc.Events.on(EventType.PlayerLeave::class.java) { event ->
-            for (session in voteSessions) {
-                session.nay.remove(event.player)
-                session.yea.remove(event.player)
-            }
-        }
 
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
             val err = db.loadPlayer(event.player)
@@ -395,6 +394,46 @@ class Main : Plugin() {
                 event.player.send("hello.user", "name" to event.player.name)
             }
         }
+
+        class TapData(val tile: Tile, val timestamp: Long = System.currentTimeMillis())
+
+        val doubleTaps = mutableMapOf<String, TapData>()
+        arc.Events.on(EventType.TapEvent::class.java) {
+            run inspect@{
+                val last = doubleTaps[it.player.uuid()] ?: return@inspect
+
+                if (last.tile != it.tile) return@inspect
+                if (System.currentTimeMillis() - last.timestamp > 200) return@inspect
+
+                val interaction = interactions[it.tile] ?: return@inspect
+
+                mindustry.gen.Call.label(
+                    it.player.con,
+                    interaction.display(it.tile, it.player),
+                    5f,
+                    it.tile.worldx(),
+                    it.tile.worldy(),
+                )
+            }
+
+            doubleTaps[it.player.uuid()] = TapData(it.tile)
+        }
+
+        arc.Events.on(EventType.PlayEvent::class.java) { event ->
+            permissionTable.clear()
+            playerActivityByUuid.clear()
+            interactions.clear()
+            gameStartTime = System.currentTimeMillis()
+        }
+
+        arc.Events.on(EventType.PlayerLeave::class.java) { event ->
+            for (session in voteSessions) {
+                session.nay.remove(event.player)
+                session.yea.remove(event.player)
+            }
+            doubleTaps.remove(event.player.uuid())
+        }
+
     }
 
     fun registerDiscordCommands(handler: CommandHandler) {
@@ -642,24 +681,24 @@ class Main : Plugin() {
 
         register("connect-discord", "<discord-user-id>", "connect with your discord account") { args, player ->
             if (bot == null) {
-                player.send("discord bot is not running")
+                player.send("connect-discord.not-running")
                 return@register
             }
 
             val id = args[0]
 
             if (id.toULongOrNull() == null) {
-                player.send("expected a discord user id (which is a number)")
+                player.send("connect-discord.id-nan")
                 return@register
             }
 
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("you are not logged in")
+                player.send("connect-discord.not-logged-in")
                 return@register
             }
 
             if (discordConnectionSessions.keys.any { it.endsWith(":$name") }) {
-                player.send("use /connect-discord-confirm to confirm your discord account")
+                player.send("connect-discord.already-sent")
             }
 
             val pin = Random.nextInt(1000, 9999).toString()
@@ -673,12 +712,12 @@ class Main : Plugin() {
 
                     arc.Core.app.post {
                         discordConnectionSessions["$pin:$name"] = id
-                        player.send("check your DMs for the pin and call /connect-discord-confirm")
+                        player.send("connect-discord.success")
                     }
                 }
             }, { e ->
                 arc.Core.app.post {
-                    player.send("cant find user with id: $id, reason: ${e.message}")
+                    player.send("connect-discord.cant-find-user", "id" to id, "reason" to e.message)
                     e.printStackTrace()
                 }
             })
@@ -689,12 +728,12 @@ class Main : Plugin() {
             val pin = args[0]
 
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("you are not logged in")
+                player.send("connect-discord.not-logged-in")
                 return@register
             }
 
             val id = discordConnectionSessions.remove("$pin:$name") ?: run {
-                player.send("invalid pin")
+                player.send("connect-discord-confirm.invalid-pin")
 
                 val toRemove = discordConnectionSessions.keys.filter { it.endsWith(":$name") }.toList()
                 for (key in toRemove) discordConnectionSessions.remove(key)
@@ -703,7 +742,7 @@ class Main : Plugin() {
             }
 
             db.setDiscordId(name, id)
-            player.send("[green]discord account connected")
+            player.send("connect-discord-confirm.success")
         }
 
         // player name -> TestSession
@@ -1023,6 +1062,7 @@ data class Config(
     val testTimeout: Int,
     val discord: DiscordConfig,
     val pewPew: PewPewConfig,
+    val doubleTapSensitivity: Int = 100,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
