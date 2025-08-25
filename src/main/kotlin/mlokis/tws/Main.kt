@@ -3,6 +3,7 @@
 package mlokis.tws
 
 import arc.util.CommandHandler
+import mindustry.content.Blocks
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import mindustry.game.EventType
@@ -14,7 +15,10 @@ import mindustry.world.Tile
 import mindustry.Vars
 import mindustry.net.WorldReloader
 import mindustry.game.Gamemode
+import mindustry.game.Team
+import mindustry.game.Teams
 import mindustry.net.Administration
+import mindustry.world.modules.ItemModule
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
@@ -556,10 +560,65 @@ class Main : Plugin() {
             }
         }
 
-        fun getMapList(): List<String> {
-            val dir = java.io.File("config/maps")
-            val files = dir.listFiles()?.map { it.name } ?: emptyList()
-            return files;
+        val buildCoreBlock = Blocks.conveyor
+
+        class BuildCoreSession(initiator: Player, val tile: Tile, val itemModule: ItemModule) : VoteSession(initiator) {
+            override val translationKey = "build-core"
+
+            override fun onDisplay(): String =
+                "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[] (and end current game)"
+
+            override fun onPass() {
+                if (!itemModule.has(Blocks.coreShard.requirements)) {
+                    sendToAll("core build failed because you are missing resources")
+                    return
+                }
+
+                if (tile.build?.block != buildCoreBlock) {
+                    sendToAll("core build failed because the tile is no longer a reinforced vault")
+                    return
+                }
+
+                mindustry.gen.Call.constructFinish(
+                    tile.build.tile,
+                    Blocks.coreShard,
+                    null,
+                    0,
+                    initiator.team(),
+                    null
+                );
+            }
+        }
+
+        register("build-core", "", "build a core at your location") { args, player ->
+            var tile = Vars.world.tile(player.tileX(), player.tileY())
+            val core = Vars.state.teams[Team.sharded]?.core() ?: run {
+                player.send("no core is present")
+                return@register
+            }
+
+            if (!core.items.has(Blocks.coreShard.requirements)) {
+                val sb = StringBuilder("you are missing resources to build a core, the requirements are: ")
+                var first = true
+                for (req in Blocks.coreShard.requirements) {
+                    if (!first) sb.append(", ")
+                    first = false
+                    sb.append(Util.itemIcons[req.item.name])
+                    sb.append(" x ")
+                    sb.append(req.amount)
+                }
+                player.send(sb.toString())
+                return@register
+            }
+
+
+            if (tile?.build?.block != buildCoreBlock) {
+                player.send("you need to be on a reinforced vault")
+                return@register
+            }
+
+            voteSessions.add(BuildCoreSession(player, tile, core.items))
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
         register("list-maps", "[page]", "list all maps you can switch to") { args, player ->
@@ -583,6 +642,7 @@ class Main : Plugin() {
                 val command = handler.commandList[i];
                 result.append("[yellow]#${i + 1}[]: ${maps[i]}\n")
             }
+
             player.sendMessage(result.toString());
         }
 
