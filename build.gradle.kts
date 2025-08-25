@@ -2,7 +2,7 @@ buildscript {
     repositories { mavenCentral() }
 
     extra.apply {
-        set("mindustryVersion", "v150")
+        set("mindustryVersion", "v151")
         set("kotlinVersion", "2.2.0")
         set("sqliteJdbcVersion", "3.50.3.0")
         set("argon2Version", "2.12")

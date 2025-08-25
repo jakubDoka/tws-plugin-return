@@ -111,6 +111,7 @@ class Main : Plugin() {
     val db = DbReactor(config)
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
+    var gameStartTime = 0L
     val bot: JDA? = run {
         JDABuilder
             .createLight(
@@ -363,6 +364,7 @@ class Main : Plugin() {
         arc.Events.on(EventType.PlayEvent::class.java) { event ->
             permissionTable.clear()
             playerActivityByUuid.clear()
+            gameStartTime = System.currentTimeMillis()
         }
 
         arc.Events.on(EventType.BlockBuildBeginEvent::class.java) { event ->
@@ -414,6 +416,10 @@ class Main : Plugin() {
                         "playing: **${Vars.state.rules.mode().name}**\n" +
                         "map: **${Vars.state.map.name()}**\n" +
                         "players: **${Groups.player.size()}**\n" +
+                        "time: **${
+                            (System.currentTimeMillis() - gameStartTime)
+                                .displayTime()
+                        }**\n" +
                         if (Vars.state.rules.mode() == Gamemode.survival)
                             "wave: **${Vars.state.wave}**\n"
                         else
