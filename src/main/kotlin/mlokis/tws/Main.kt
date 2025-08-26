@@ -236,6 +236,11 @@ class Main : Plugin() {
         }
     }
 
+    fun displayDiscordInvite(player: Player) {
+        if (config.discord.invite == null) return
+
+        mindustry.gen.Call.openURI(player.con, config.discord.invite)
+    }
 
     override fun init() {
         pewPew.reload(config.pewPew)
@@ -397,6 +402,7 @@ class Main : Plugin() {
                 event.player.send(err)
             } else {
                 event.player.send("hello.user", "name" to event.player.name)
+                displayDiscordInvite(event.player)
             }
         }
 
@@ -438,7 +444,6 @@ class Main : Plugin() {
             }
             doubleTaps.remove(event.player.uuid())
         }
-
     }
 
     fun registerDiscordCommands(handler: CommandHandler) {
@@ -738,6 +743,15 @@ class Main : Plugin() {
                 answerMatrix = config.testQuestions[questionIndex].answers.indices.toMutableList()
                 answerMatrix.shuffle()
             }
+        }
+
+        register("discord-invite", "", "get the discord invite link") { args, player ->
+            if (config.discord.invite == null) {
+                player.send("discord invite link id not configured")
+                return@register
+            }
+
+            displayDiscordInvite(player)
         }
 
         register("connect-discord", "<discord-user-id>", "connect with your discord account") { args, player ->
@@ -1130,6 +1144,7 @@ data class DiscordConfig(
     val bridgeChannelId: ULong?,
     val commandsChannelId: ULong?,
     val prefix: String,
+    val invite: String?,
 )
 
 @Serializable
@@ -1182,7 +1197,7 @@ data class Config(
                         ),
                     ),
                     1,
-                    DiscordConfig(null, null, "!"),
+                    DiscordConfig(null, null, "!", null),
                     PewPewConfig(
                         mapOf(
                             "copper-gun" to PewPew.Stats.DEFAULT,
