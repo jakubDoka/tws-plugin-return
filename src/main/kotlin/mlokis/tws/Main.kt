@@ -17,6 +17,7 @@ import mindustry.net.WorldReloader
 import mindustry.game.Gamemode
 import mindustry.game.Team
 import mindustry.game.Teams
+import mindustry.gen.Call
 import mindustry.net.Administration
 import mindustry.world.modules.ItemModule
 import net.dv8tion.jda.api.JDA
@@ -1045,11 +1046,25 @@ class Main : Plugin() {
             }
         }
 
-        register("login", "<username> <password>", "login to your account") { args, player ->
+
+        var playerInputId = 0
+        val passwordInputs = mutableMapOf<Int, (String) -> Unit>()
+        arc.Events.on(EventType.TextInputEvent::class.java) {
+            passwordInputs.remove(it.textInputId)?.invoke(it.text)
+        }
+
+        fun Player.prompt(title: String, message: String, callback: (String) -> Unit) {
+            Call.textInput(con, playerInputId, title, message, 1024, "", false)
+            passwordInputs[playerInputId] = callback
+            playerInputId++
+        }
+
+        register("login", "<username>", "login to your account") { args, player ->
             val username = args[0]
-            val password = args[1]
-            val err = db.loginPlayer(player, username, password)
-            if (err != null) player.send(err)
+            player.prompt("Login", "password") { password ->
+                val err = db.loginPlayer(player, username, password)
+                if (err != null) player.send(err)
+            }
         }
 
         register("logout", "", "logout from your account") { args, player ->
@@ -1064,31 +1079,33 @@ class Main : Plugin() {
         data class RegisterSession(val name: String, val password: String)
 
         val registerSessions = mutableMapOf<Player, RegisterSession>()
-        register("register", "<name> <password>", "register to your account") { args, player ->
+        register("register", "<username>", "register to your account") { args, player ->
             val name = args[0]
-            val password = args[1]
 
             val session = registerSessions.remove(player)
-            if (session != null) {
-                if (session.name != name) {
-                    player.send("register.name-mismatch")
-                    return@register
-                }
 
-                if (session.password != password) {
-                    player.send("register.password-mismatch")
-                    return@register
-                }
+            if (session != null && session.name != name) {
+                player.send("register.name-mismatch")
+                return@register
+            }
 
-                val err = db.registerPlayer(name, session.password)
-                if (err != null) {
-                    player.send(err)
+            player.prompt("Register", "password") { password ->
+                if (session != null) {
+                    if (session.password != password) {
+                        player.send("register.password-mismatch")
+                        return@prompt
+                    }
+
+                    val err = db.registerPlayer(name, session.password)
+                    if (err != null) {
+                        player.send(err)
+                    } else {
+                        player.send("register.success", "name" to name)
+                    }
                 } else {
-                    player.send("register.success", "name" to name)
+                    registerSessions[player] = RegisterSession(name, password)
+                    player.send("register.repeat")
                 }
-            } else {
-                registerSessions[player] = RegisterSession(name, password)
-                player.send("register.repeat")
             }
         }
 
