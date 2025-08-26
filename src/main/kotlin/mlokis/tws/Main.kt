@@ -3,22 +3,25 @@
 package mlokis.tws
 
 import arc.util.CommandHandler
-import mindustry.content.Blocks
+import arc.util.Log.err
+import arc.util.Log.info
+import arc.util.Log
+import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import mindustry.Vars
+import mindustry.content.Blocks
 import mindustry.game.EventType
+import mindustry.game.Gamemode
+import mindustry.game.Team
+import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.mod.Plugin
-import mindustry.type.UnitType
-import mindustry.world.Tile
-import mindustry.Vars
-import mindustry.net.WorldReloader
-import mindustry.game.Gamemode
-import mindustry.game.Team
-import mindustry.game.Teams
-import mindustry.gen.Call
 import mindustry.net.Administration
+import mindustry.net.WorldReloader
+import mindustry.world.Tile
 import mindustry.world.modules.ItemModule
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
@@ -27,13 +30,11 @@ import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
-import java.util.ArrayList
-import java.util.EnumSet
+import java.util.*
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
-import kotlin.time.Instant
 
 object Translations {
     const val DEFAULT_LOCALE = "en_US"
@@ -136,7 +137,7 @@ class Main : Plugin() {
                     tryHandleDiscordCommand(event)
                 }
             })
-            .setActivity(Activity.playing("tws-plugin"))
+            .setActivity(Activity.playing("${discordCommands.prefix}help"))
             .build()
             .awaitReady()
     }
@@ -243,6 +244,57 @@ class Main : Plugin() {
     }
 
     override fun init() {
+        Log.useColors = false
+        Log.logger = object : Log.LogHandler {
+            val prevLogger = Log.logger
+            val adminChannel =
+                if (config.discord.adminChannelId != null && bot != null)
+                    bot.getChannelById(MessageChannel::class.java, config.discord.adminChannelId.toString())
+                else null
+
+            // batching state
+            private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+            private val messageQueue = ConcurrentLinkedQueue<String>()
+            private var flushJob: Job? = null
+            private val maxMessageLength = 2000
+
+            override fun log(level: Log.LogLevel, message: String) {
+                prevLogger.log(level, message)
+
+                if (adminChannel != null) {
+                    messageQueue.add("[$level] $message")
+                    debounceFlush(adminChannel)
+                }
+            }
+
+            private fun debounceFlush(channel: MessageChannel, delayMillis: Long = 100) {
+                if (flushJob?.isActive == true) return // already scheduled
+                flushJob = scope.launch {
+                    delay(delayMillis)
+                    flush(channel)
+                }
+            }
+
+            private fun flush(channel: MessageChannel) {
+                if (messageQueue.isEmpty()) return
+
+                val batch = StringBuilder()
+                while (true) {
+                    val msg = messageQueue.peek() ?: break
+                    if (batch.length + msg.length + 1 > maxMessageLength) {
+                        // flush current batch
+                        channel.sendMessage(batch).queue()
+                        batch.clear()
+                    }
+                    batch.appendLine(messageQueue.poll())
+                }
+
+                if (batch.isNotEmpty()) {
+                    channel.sendMessage(batch).queue()
+                }
+            }
+        }
+
         pewPew.reload(config.pewPew)
 
         // HUD
@@ -478,16 +530,49 @@ class Main : Plugin() {
     }
 
     override fun registerServerCommands(handler: CommandHandler) {
+        discordCommands.register(
+            "server-cmd",
+            "[args...]",
+            "execute a server command"
+        ) { args, event: MessageReceivedEvent ->
+            if (event.channel.id != config.discord.adminChannelId.toString()) {
+                event.channel.sendMessage("wrong channel for commands, use <#${config.discord.adminChannelId}>")
+                    .queue()
+                return@register
+            }
+
+            val res = handler.handleMessage(args[0])
+            when (res.type) {
+                CommandHandler.ResponseType.fewArguments -> {
+                    event.channel.sendMessage("too few arguments: ${discordCommands.prefix}server-cmd **${res.command.text}** *${res.command.paramText}*")
+                        .queue()
+                }
+
+                CommandHandler.ResponseType.manyArguments -> {
+                    event.channel.sendMessage("too many arguments: ${discordCommands.prefix}server-cmd **${res.command.text}** *${res.command.paramText}*")
+                        .queue()
+                }
+
+                CommandHandler.ResponseType.unknownCommand -> {
+                    event.channel.sendMessage("unknown command, use ${discordCommands.prefix}server-cmd **help**")
+                        .queue()
+                }
+
+                CommandHandler.ResponseType.noCommand -> error("should not happen")
+                CommandHandler.ResponseType.valid -> {}
+            }
+        }
+
         handler.register("tws-pardon", "<online-name>", "reliefe a player from griefer status") { args ->
             val name = args[0]
             val player = Groups.player.find { name in it.name && db.isGriefer(it) }
             if (player == null) {
-                print("player $name that is also a griefer is not online")
+                info("player $name that is also a griefer is not online")
                 return@register
             }
 
             db.unmarkGriefer(player)
-            print("pardoned $name")
+            info("pardoned $name")
         }
 
         handler.register("tws-reload-config", "reload config file at ${Config.PATH}") {
@@ -495,27 +580,22 @@ class Main : Plugin() {
                 config = Config.load()
                 pewPew.reload(config.pewPew)
             } catch (e: Exception) {
-                print("Error reloading config file at ${Config.PATH}")
+                err("Error reloading config file at ${Config.PATH}")
                 e.printStackTrace()
             }
         }
 
         handler.register("tws-set-rank", "<@name/#uuid> <rank>", "set rank of a player") { args ->
-            if (args.size < 2) {
-                print("expected at least 2 arguments, got ${args.size}")
-                return@register
-            }
-
             val rank = args[1]
 
             if (rank == Rank.GRIEFER) {
-                print("to set a rank to griefer, use /tws-mark-griefer")
+                err("to set a rank to griefer, use /tws-mark-griefer")
                 return@register
             }
 
             val rankObj = config.ranks[rank] ?: run {
-                print("rank $rank does not exist")
-                print("available ranks: ${config.ranks.keys}")
+                err("rank $rank does not exist")
+                info("available ranks: ${config.ranks.keys}")
                 return@register
             }
 
@@ -529,12 +609,12 @@ class Main : Plugin() {
                 name = nameOrId.substring(1)
                 if (!db.playerExists(name)) name = null
             } else {
-                print("expected name starting with @ or uuid starting with #")
+                err("expected name starting with @ or uuid starting with #")
                 return@register
             }
 
             if (name == null) {
-                print("player not found")
+                err("player not found")
                 return@register
             }
 
@@ -1143,6 +1223,7 @@ data class PewPewConfig(val def: Map<String, PewPew.Stats>, val links: Map<Strin
 data class DiscordConfig(
     val bridgeChannelId: ULong?,
     val commandsChannelId: ULong?,
+    val adminChannelId: ULong?,
     val prefix: String,
     val invite: String?,
 )
@@ -1197,7 +1278,7 @@ data class Config(
                         ),
                     ),
                     1,
-                    DiscordConfig(null, null, "!", null),
+                    DiscordConfig(null, null, null, "!", null),
                     PewPewConfig(
                         mapOf(
                             "copper-gun" to PewPew.Stats.DEFAULT,

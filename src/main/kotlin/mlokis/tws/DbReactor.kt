@@ -8,6 +8,7 @@ import de.mkammerer.argon2.Argon2
 import mindustry.game.EventType
 import mindustry.gen.Player
 import mindustry.mod.Plugin
+import arc.util.Log.*
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -122,25 +123,25 @@ class DbReactor(val config: Config) {
         try {
             qs.markGriefer.executeUpdate()
         } catch (e: SQLException) {
-            println("error marking griefer, (could be duplicate entry)")
+            err("error marking griefer, (could be duplicate entry)")
             e.printStackTrace()
         }
         qs.markGriefer.setString(1, player.ip())
         try {
             qs.markGriefer.executeUpdate()
         } catch (e: SQLException) {
-            println("error marking griefer, (could be duplicate entry)")
+            err("error marking griefer, (could be duplicate entry)")
             e.printStackTrace()
         }
         player.stateKick("marked-griefer")
-        println("marked ${player.name} as griefer")
+        info("marked ${player.name} as griefer")
     }
 
     fun unmarkGriefer(player: Player) {
         qs.unmarkGriefer.setString(1, player.uuid())
         qs.unmarkGriefer.setString(1, player.ip())
         qs.unmarkGriefer.executeUpdate()
-        println("pardoned ${player.name}")
+        err("pardoned ${player.name}")
     }
 
     fun getRank(player: Player): String {
@@ -203,11 +204,11 @@ class DbReactor(val config: Config) {
                         arc.Core.app.post {
                             markGriefer(player)
                             player.markKick("using a VPN/TOR/proxy/relay")
-                            println("banned ${player.name} for using a VPN/TOR/proxy/relay")
+                            info("banned ${player.name} for using a VPN/TOR/proxy/relay")
                         }
                     }
                 } catch (e: Exception) {
-                    println("error checking vpn status: ${body}")
+                    err("error checking vpn status: ${body}")
                     e.printStackTrace()
                 }
             }
@@ -234,7 +235,7 @@ class DbReactor(val config: Config) {
         resultSet = qs.getUser.executeQuery();
 
         if (!resultSet.next()) {
-            println("ERROR: player ${player.name} is not registered but he has a login")
+            err("player ${player.name} is not registered but he has a login")
             return BUG_MSG
         }
 
@@ -253,19 +254,19 @@ class DbReactor(val config: Config) {
         qs.getPasswordHash.setString(1, name)
         val resultSet = qs.getPasswordHash.executeQuery()
         if (!resultSet.next()) {
-            println("player ${player.name} is not registered but is trying to login")
+            err("player ${player.name} is not registered but is trying to login")
             return "login.register-first"
         }
 
         val passwordHash = resultSet.getString("password_hash")
         if (passwordHash == null) {
-            println("ERROR: player ${name} password hash is null")
+            err("ERROR: player ${name} password hash is null")
             return BUG_MSG
         }
 
         @Suppress("DEPRECATION")
         if (!hasher.verify(passwordHash, password)) {
-            println("player ${name} tried to login with wrong password")
+            info("player ${name} tried to login with wrong password")
             return "login.wrong-password"
         }
 
@@ -273,7 +274,7 @@ class DbReactor(val config: Config) {
         qs.addLogin.setString(2, name)
         qs.addLogin.executeUpdate()
 
-        println("player ${name} logged in")
+        info("player ${name} logged in")
         player.stateKick("login.success")
 
         return null
@@ -294,12 +295,12 @@ class DbReactor(val config: Config) {
             qs.createUser.setString(2, passwordHash)
             qs.createUser.executeUpdate()
         } catch (e: SQLException) {
-            println("error registering player ${name}")
+            info("error registering player ${name}, this should be mostly fine")
             e.printStackTrace()
             return "register.already-registered"
         }
 
-        println("player ${name} registered")
+        info("player ${name} registered")
 
         return null
     }

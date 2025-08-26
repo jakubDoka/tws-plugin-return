@@ -3,6 +3,7 @@ buildscript {
 
     extra.apply {
         set("mindustryVersion", "v151")
+        set("coroutinesVersion", "1.10.2")
         set("kotlinVersion", "2.2.0")
         set("sqliteJdbcVersion", "3.50.3.0")
         set("argon2Version", "2.12")
@@ -36,6 +37,8 @@ dependencies {
     compileOnly("com.github.Anuken.Mindustry:core:${project.extra["mindustryVersion"]}")
     compileOnly("com.github.anuken.mindustry:server:${project.extra["mindustryVersion"]}")
 
+
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:${project.extra["coroutinesVersion"]}")
     implementation("org.xerial:sqlite-jdbc:${project.extra["sqliteJdbcVersion"]}")
     implementation("de.mkammerer:argon2-jvm:${project.extra["argon2Version"]}")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:${project.extra["kotlinxSerializationVersion"]}")
