@@ -3,11 +3,9 @@
 package mlokis.tws
 
 import arc.util.CommandHandler
+import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
-import arc.util.Log
-import kotlinx.coroutines.*
-import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import mindustry.Vars
@@ -31,6 +29,7 @@ import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -252,46 +251,41 @@ class Main : Plugin() {
                     bot.getChannelById(MessageChannel::class.java, config.discord.adminChannelId.toString())
                 else null
 
-            // batching state
-            private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-            private val messageQueue = ConcurrentLinkedQueue<String>()
-            private var flushJob: Job? = null
-            private val maxMessageLength = 2000
+            val logList = ConcurrentLinkedQueue<String>()
+            var debuouceTask: arc.util.Timer.Task? = null
+            val maxMessageLength = 2000
 
             override fun log(level: Log.LogLevel, message: String) {
                 prevLogger.log(level, message)
 
                 if (adminChannel != null) {
-                    messageQueue.add("[$level] $message")
+                    logList.add("[$level] $message")
                     debounceFlush(adminChannel)
                 }
             }
 
-            private fun debounceFlush(channel: MessageChannel, delayMillis: Long = 100) {
-                if (flushJob?.isActive == true) return // already scheduled
-                flushJob = scope.launch {
-                    delay(delayMillis)
-                    flush(channel)
-                }
-            }
+            fun debounceFlush(channel: MessageChannel) {
+                if (debuouceTask != null) return
 
-            private fun flush(channel: MessageChannel) {
-                if (messageQueue.isEmpty()) return
+                debuouceTask = arc.util.Timer.schedule({
+                    debuouceTask = null
 
-                val batch = StringBuilder()
-                while (true) {
-                    val msg = messageQueue.peek() ?: break
-                    if (batch.length + msg.length + 1 > maxMessageLength) {
-                        // flush current batch
-                        channel.sendMessage(batch).queue()
-                        batch.clear()
+                    val batch = StringBuilder()
+                    while (true) {
+                        val msg = logList.poll() ?: break
+                        if (batch.length + msg.length + 1 > maxMessageLength) {
+                            // flush current batch
+                            channel.sendMessage(batch).queue()
+                            batch.clear()
+                        }
+                        batch.appendLine(msg)
                     }
-                    batch.appendLine(messageQueue.poll())
-                }
 
-                if (batch.isNotEmpty()) {
-                    channel.sendMessage(batch).queue()
-                }
+                    if (batch.isNotEmpty()) {
+                        channel.sendMessage(batch).queue()
+                    }
+
+                }, 0.1f)
             }
         }
 
@@ -821,17 +815,6 @@ class Main : Plugin() {
             player.sendMessage(result.toString());
         }
 
-        class TestSession {
-            var questionIndex = 0
-            var failedQuestions = 0
-            var answerMatrix = mutableListOf<Int>()
-
-            fun generateAnswerMatrix() {
-                answerMatrix = config.testQuestions[questionIndex].answers.indices.toMutableList()
-                answerMatrix.shuffle()
-            }
-        }
-
         register("discord-invite", "", "get the discord invite link") { args, player ->
             if (config.discord.invite == null) {
                 player.send("discord invite link id not configured")
@@ -905,6 +888,17 @@ class Main : Plugin() {
 
             db.setDiscordId(name, id)
             player.send("connect-discord-confirm.success")
+        }
+
+        class TestSession {
+            var questionIndex = 0
+            var failedQuestions = 0
+            var answerMatrix = mutableListOf<Int>()
+
+            fun generateAnswerMatrix() {
+                answerMatrix = config.testQuestions[questionIndex].answers.indices.toMutableList()
+                answerMatrix.shuffle()
+            }
         }
 
         // player name -> TestSession
