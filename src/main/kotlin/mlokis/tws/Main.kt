@@ -78,7 +78,7 @@ fun Player.markKick(reason: String) = kick(
 )
 
 fun Player.stateKick(reason: String) = kick(
-    fmt("state-kick", "reason" to fmt("states-kick.$reason")), 0
+    fmt("state-kick", "reason" to fmt("state-kick.$reason")), 0
 )
 
 fun Player.fmt(message: String, vararg args: Pair<String, Any?>): String =
@@ -185,7 +185,7 @@ class Main : Plugin() {
         abstract fun onPass()
 
         fun display(idx: Int): String {
-            return "${initiator.name}[] wants to ${onDisplay()}, [yellow]${neededVotes}[] votes needed" +
+            return "${initiator.plainName()}[] wants to ${onDisplay()}, [yellow]${neededVotes}[] votes needed" +
                     " (#$idx [green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s)"
         }
     }
@@ -381,7 +381,7 @@ class Main : Plugin() {
                 } else if (name != null) {
                     channel.sendMessage("[$name]: $message").queue()
                 } else {
-                    channel.sendMessage("[*${player.name}*]: $message").queue()
+                    channel.sendMessage("[*${player.plainName()}*]: $message").queue()
                 }
             }
 
@@ -394,7 +394,7 @@ class Main : Plugin() {
             playerActivityByUuid.getOrPut(it.player.uuid())
             { PlayerActivityTracker() }.onAction(it.player)
 
-            if (db.isGriefer(it.player)) {
+            if (db.isGriefer(it.player.info)) {
                 it.player.send("perm.griefer")
                 return@addActionFilter false
             }
@@ -453,7 +453,7 @@ class Main : Plugin() {
             if (err != null) {
                 event.player.send(err)
             } else {
-                event.player.send("hello.user", "name" to event.player.name)
+                event.player.send("hello.user", "name" to event.player.plainName())
                 displayDiscordInvite(event.player)
             }
         }
@@ -563,19 +563,26 @@ class Main : Plugin() {
             }
         }
 
-        handler.register("tws-pardon", "<online-name>", "reliefe a player from griefer status") { args ->
-            val name = args[0]
-            val player = Groups.player.find { name in it.name && db.isGriefer(it) }
-            if (player == null) {
-                info("player $name that is also a griefer is not online")
+        handler.register("griefer", "<add/remove> <username/id>", "mark or unpark a griefer") { args ->
+            val action = args[0]
+            val nameOrId = args[1]
+
+            val player = Groups.player.find { it.plainName().contentEquals(nameOrId, true) }
+            val info = if (player != null) player.info else Vars.netServer.admins.getInfoOptional(nameOrId)
+
+            if (info == null) {
+                err("player $nameOrId not found")
                 return@register
             }
 
-            db.unmarkGriefer(player)
-            info("pardoned $name")
+            when (action) {
+                "add" -> db.markGriefer(info)
+                "remove" -> db.unmarkGriefer(info)
+                else -> err("expected add or remove")
+            }
         }
 
-        handler.register("tws-reload-config", "reload config file at ${Config.PATH}") {
+        handler.register("reload-config", "reload config file at ${Config.PATH}") {
             try {
                 config = Config.load()
                 pewPew.reload(config.pewPew)
@@ -585,7 +592,7 @@ class Main : Plugin() {
             }
         }
 
-        handler.register("tws-set-rank", "<@name/#uuid> <rank>", "set rank of a player") { args ->
+        handler.register("set-rank", "<@name/#uuid> <rank>", "set rank of a player") { args ->
             val rank = args[1]
 
             if (rank == Rank.GRIEFER) {
@@ -637,7 +644,7 @@ class Main : Plugin() {
             callbalck: (Array<String>, Player) -> Unit
         ) {
             handler.register(name, signature, description) { args, player: Player ->
-                if (db.isGriefer(player)) {
+                if (db.isGriefer(player.info)) {
                     player.send("command.griefer")
                     return@register
                 }
@@ -1005,9 +1012,10 @@ class Main : Plugin() {
         ) : VoteSession(initiator) {
             override val translationKey = "griefer"
 
-            override fun onDisplay(): String = "mark [pink]${target.name}[] a griefer because [yellow]${reason}[]"
+            override fun onDisplay(): String =
+                "mark [pink]${target.plainName()}[] a griefer because [yellow]${reason}[]"
 
-            override fun onPass() = db.markGriefer(target)
+            override fun onPass() = db.markGriefer(target.info)
         }
 
         register(
@@ -1031,7 +1039,7 @@ class Main : Plugin() {
                 return@register
             }
 
-            val target = Groups.player.find { "#" + it.id == name || name in it.name }
+            val target = Groups.player.find { "#" + it.id == name || it.plainName().contains(name, true) }
 
             if (target == null) {
                 player.send("votekick.not-found", "name" to name)
@@ -1048,13 +1056,13 @@ class Main : Plugin() {
                 return@register
             }
 
-            if (db.isGriefer(target)) {
+            if (db.isGriefer(target.info)) {
                 player.send("votekick.already-marked")
                 return@register
             }
 
             if (player.admin) {
-                db.markGriefer(target)
+                db.markGriefer(target.info)
                 player.send("votekick.marked")
                 return@register
             }
@@ -1101,7 +1109,7 @@ class Main : Plugin() {
                     session.yea[player] = playerRank.voteWeight
                     sendToAll(
                         "vote.voted-for",
-                        "voter" to player.name,
+                        "voter" to player.plainName(),
                         "for" to session.onDisplay()
                     )
                 }
@@ -1111,7 +1119,7 @@ class Main : Plugin() {
                     session.nay[player] = playerRank.voteWeight
                     sendToAll(
                         "vote.voted-against",
-                        "voter" to player.name,
+                        "voter" to player.plainName(),
                         "against" to session.onDisplay()
                     )
                 }

@@ -9,6 +9,8 @@ import mindustry.game.EventType
 import mindustry.gen.Player
 import mindustry.mod.Plugin
 import arc.util.Log.*
+import mindustry.gen.Groups
+import mindustry.net.Administration
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -42,7 +44,7 @@ private class Queryes(val connection: Connection) {
     val getPlayerNameByDiscordId = initStmt("SELECT name FROM user WHERE discord_id = ?")
     val getUserDiscordId = initStmt("SELECT discord_id FROM user WHERE name = ?")
     val setDiscordId = initStmt("UPDATE user SET discord_id = ? WHERE name = ?")
-    val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ? OR ban_key = ?")
+    val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ?")
     val markGriefer = initStmt("INSERT INTO griefer (ban_key) VALUES (?)")
     val unmarkGriefer = initStmt("DELETE FROM griefer WHERE ban_key = ? OR ban_key = ?")
     val addFailedTestSession = initStmt("INSERT INTO failed_test_sessions (name) VALUES (?)")
@@ -111,37 +113,53 @@ class DbReactor(val config: Config) {
         return null
     }
 
-    fun isGriefer(player: Player): Boolean {
-        qs.isGriefer.setString(1, player.uuid())
-        qs.isGriefer.setString(1, player.ip())
+    fun isGriefer(player: Administration.PlayerInfo): Boolean {
+        for (ip in player.ips) {
+            qs.isGriefer.setString(1, ip)
+            val resultSet = qs.isGriefer.executeQuery()
+            if (resultSet.next()) return true
+        }
+
+        qs.isGriefer.setString(1, player.id)
         val resultSet = qs.isGriefer.executeQuery()
         return resultSet.next()
     }
 
-    fun markGriefer(player: Player) {
-        qs.markGriefer.setString(1, player.uuid())
+    fun markGriefer(player: Administration.PlayerInfo) {
+        // TODO: we could batch
+        qs.markGriefer.setString(1, player.id)
         try {
             qs.markGriefer.executeUpdate()
         } catch (e: SQLException) {
             err("error marking griefer, (could be duplicate entry)")
             e.printStackTrace()
         }
-        qs.markGriefer.setString(1, player.ip())
-        try {
-            qs.markGriefer.executeUpdate()
-        } catch (e: SQLException) {
-            err("error marking griefer, (could be duplicate entry)")
-            e.printStackTrace()
+
+        for (ip in player.ips) {
+            qs.markGriefer.setString(1, ip)
+            try {
+                qs.markGriefer.executeUpdate()
+            } catch (e: SQLException) {
+                err("error marking griefer, (could be duplicate entry)")
+                e.printStackTrace()
+            }
         }
-        player.stateKick("marked-griefer")
-        info("marked ${player.name} as griefer")
+
+        Groups.player.find { it.uuid() == player.id }?.stateKick("marked-griefer")
+        info("marked ${player.id} as griefer")
     }
 
-    fun unmarkGriefer(player: Player) {
-        qs.unmarkGriefer.setString(1, player.uuid())
-        qs.unmarkGriefer.setString(1, player.ip())
+    fun unmarkGriefer(player: Administration.PlayerInfo) {
+        qs.unmarkGriefer.setString(1, player.id)
         qs.unmarkGriefer.executeUpdate()
-        err("pardoned ${player.name}")
+
+        for (ip in player.ips) {
+            qs.unmarkGriefer.setString(1, ip)
+            qs.unmarkGriefer.executeUpdate()
+        }
+
+        Groups.player.find { it.uuid() == player.id }?.stateKick("unmarked-griefer")
+        err("unmarked ${player.id}")
     }
 
     fun getRank(player: Player): String {
@@ -202,7 +220,7 @@ class DbReactor(val config: Config) {
                         response.security.proxy || response.security.relay
                     ) {
                         arc.Core.app.post {
-                            markGriefer(player)
+                            markGriefer(player.info)
                             player.markKick("using a VPN/TOR/proxy/relay")
                             info("banned ${player.name} for using a VPN/TOR/proxy/relay")
                         }
@@ -215,7 +233,7 @@ class DbReactor(val config: Config) {
     }
 
     fun loadPlayer(player: Player): String? {
-        if (isGriefer(player)) {
+        if (isGriefer(player.info)) {
             val griferRank = config.getRank(player, Rank.GRIEFER) ?: return BUG_MSG
             player.name = "${player.name}[${griferRank.color}]<griefer>[]"
             return "hello.griefer"
