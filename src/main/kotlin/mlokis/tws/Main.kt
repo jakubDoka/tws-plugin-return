@@ -452,9 +452,9 @@ class Main : Plugin() {
             val err = db.loadPlayer(event.player)
             if (err != null) {
                 event.player.send(err)
+                displayDiscordInvite(event.player)
             } else {
                 event.player.send("hello.user", "name" to event.player.plainName())
-                displayDiscordInvite(event.player)
             }
         }
 
