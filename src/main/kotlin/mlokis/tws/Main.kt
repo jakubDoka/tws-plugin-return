@@ -647,13 +647,13 @@ class Main : Plugin() {
             }
         }
 
-        val buildCoreBlock = Blocks.conveyor
+        val buildCoreBlock = Blocks.reinforcedVault
 
         class BuildCoreSession(initiator: Player, val tile: Tile, val itemModule: ItemModule) : VoteSession(initiator) {
             override val translationKey = "build-core"
 
             override fun onDisplay(): String =
-                "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[] (and end current game)"
+                "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[]"
 
             override fun onPass() {
                 if (!itemModule.has(Blocks.coreShard.requirements)) {
@@ -665,6 +665,8 @@ class Main : Plugin() {
                     sendToAll("core build failed because the tile is no longer a reinforced vault")
                     return
                 }
+
+                itemModule.remove(Blocks.coreShard.requirements)
 
                 mindustry.gen.Call.constructFinish(
                     tile.build.tile,
