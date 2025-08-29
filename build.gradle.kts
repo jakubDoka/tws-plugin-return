@@ -32,6 +32,8 @@ repositories {
 }
 
 dependencies {
+    implementation(kotlin("reflect"))
+
     compileOnly("com.github.Anuken.Arc:arc-core:${project.extra["mindustryVersion"]}")
     compileOnly("com.github.Anuken.Mindustry:core:${project.extra["mindustryVersion"]}")
     compileOnly("com.github.anuken.mindustry:server:${project.extra["mindustryVersion"]}")

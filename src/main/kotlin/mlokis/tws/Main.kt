@@ -2,12 +2,14 @@
 
 package mlokis.tws
 
+import kotlin.reflect.full.*
 import arc.util.CommandHandler
 import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.game.EventType
@@ -19,6 +21,7 @@ import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.net.Administration
 import mindustry.net.WorldReloader
+import mindustry.world.Block
 import mindustry.world.Tile
 import mindustry.world.modules.ItemModule
 import net.dv8tion.jda.api.JDA
@@ -576,12 +579,12 @@ class Main : Plugin() {
             }
         }
 
-        handler.register("reload-config", "reload config file at ${Config.PATH}") {
+        handler.register("reload-config", "reload config files in ${Config.PATH}") {
             try {
                 config = Config.load()
                 pewPew.reload(config.pewPew)
             } catch (e: Exception) {
-                err("Error reloading config file at ${Config.PATH}")
+                err("Error reloading config file at ${Config.PATH}: ${e.message}")
                 e.printStackTrace()
             }
         }
@@ -647,7 +650,10 @@ class Main : Plugin() {
             }
         }
 
-        val buildCoreBlock = Blocks.reinforcedVault
+        val buildCoreBlock = mapOf(
+            Blocks.vault to Blocks.coreShard,
+            Blocks.reinforcedVault to Blocks.coreBastion,
+        )
 
         class BuildCoreSession(initiator: Player, val tile: Tile, val itemModule: ItemModule) : VoteSession(initiator) {
             override val translationKey = "build-core"
@@ -661,16 +667,16 @@ class Main : Plugin() {
                     return
                 }
 
-                if (tile.build?.block != buildCoreBlock) {
-                    sendToAll("core build failed because the tile is no longer a reinforced vault")
+                val toBuild = buildCoreBlock[tile.build?.block] ?: run {
+                    sendToAll("core build failed because the tile is no longer a ${buildCoreBlock.keys.joinToString(" or ")}")
                     return
-                }
+                };
 
-                itemModule.remove(Blocks.coreShard.requirements)
+                itemModule.remove(toBuild.requirements)
 
                 mindustry.gen.Call.constructFinish(
                     tile.build.tile,
-                    Blocks.coreShard,
+                    toBuild,
                     null,
                     0,
                     initiator.team(),
@@ -700,11 +706,10 @@ class Main : Plugin() {
                 return@register
             }
 
-
-            if (tile?.build?.block != buildCoreBlock) {
-                player.send("you need to be on a reinforced vault")
+            val toBuild = buildCoreBlock[tile.build?.block] ?: run {
+                player.send("core can only be built on a ${buildCoreBlock.keys.joinToString(" or ")}")
                 return@register
-            }
+            };
 
             voteSessions.add(BuildCoreSession(player, tile, core.items))
             handler.handleMessage("/vote y #${voteSessions.size}", player)
@@ -898,7 +903,7 @@ class Main : Plugin() {
             var answerMatrix = mutableListOf<Int>()
 
             fun generateAnswerMatrix() {
-                answerMatrix = config.testQuestions[questionIndex].answers.indices.toMutableList()
+                answerMatrix = config.test.questions[questionIndex].answers.indices.toMutableList()
                 answerMatrix.shuffle()
             }
         }
@@ -911,9 +916,9 @@ class Main : Plugin() {
                 return@register
             }
 
-            val lastFailed = db.hasFailedTestSession(name, config.testTimeout)
+            val lastFailed = db.hasFailedTestSession(name, config.test.timeout)
             if (lastFailed != null) {
-                val lastFailedTime = lastFailed + config.testTimeout * 1000 * 60 * 60
+                val lastFailedTime = lastFailed + config.test.timeout * 1000 * 60 * 60
                 if (System.currentTimeMillis() < lastFailedTime) {
                     player.send(
                         "tws-test.start.recently-failed",
@@ -949,7 +954,7 @@ class Main : Plugin() {
                 session.generateAnswerMatrix()
             }
 
-            val question = config.testQuestions[session.questionIndex]
+            val question = config.test.questions[session.questionIndex]
             player.sendMessage("${player.selectLocale(question.question)}:")
             for ((i, j) in session.answerMatrix.withIndex()) {
                 player.sendMessage("  ${i + 1}. ${player.selectLocale(question.answers[j])}")
@@ -978,7 +983,7 @@ class Main : Plugin() {
 
             session.questionIndex++
 
-            if (session.questionIndex < config.testQuestions.size) {
+            if (session.questionIndex < config.test.questions.size) {
                 handler.handleMessage("/tws-test-show", player)
                 return@register
             }
@@ -990,7 +995,7 @@ class Main : Plugin() {
                 player.send(
                     "tws-test.answer.failed",
                     "failed-questions" to session.failedQuestions,
-                    "timeout" to config.testTimeout
+                    "timeout" to config.test.timeout
                 )
 
                 db.addFailedTestSession(name)
@@ -1233,13 +1238,14 @@ data class DiscordConfig(
 )
 
 @Serializable
+data class TestConfig(val questions: List<TestQuestion>, val timeout: Int)
+
+@Serializable
 data class Config(
     val ranks: HashMap<String, Rank>,
-    val testQuestions: List<TestQuestion>,
-    val testTimeout: Int,
+    val test: TestConfig,
     val discord: DiscordConfig,
     val pewPew: PewPewConfig,
-    val doubleTapSensitivity: Int = 100,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -1249,57 +1255,74 @@ data class Config(
     }
 
     companion object {
-        const val PATH = "config/tws-config.json"
+        const val PATH = "config/tws/"
+
+        val default = Config(
+            hashMapOf(
+                Rank.GRIEFER to Rank("pink", BlockProtectionRank.Griefer, 0, true),
+                Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
+                Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
+                Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 1, false),
+                "dev" to Rank("purple", BlockProtectionRank.Member, 100, true),
+                "owner" to Rank("gold", BlockProtectionRank.Member, 100, true),
+            ),
+            TestConfig(
+                listOf(
+                    TestQuestion(
+                        mapOf("en_US" to "What is the capital of France?"),
+                        listOf(
+                            mapOf("en_US" to "Paris"),
+                            mapOf("en_US" to "London"),
+                            mapOf("en_US" to "Berlin")
+                        )
+                    ),
+                    TestQuestion(
+                        mapOf("en_US" to "Which question is this?"),
+                        listOf(mapOf("en_US" to "2"), mapOf("en_US" to "3"), mapOf("en_US" to "1"))
+                    ),
+                    TestQuestion(
+                        mapOf("en_US" to "What is the capital of Italy?"),
+                        listOf(mapOf("en_US" to "Rome"), mapOf("en_US" to "London"), mapOf("en_US" to "Paris"))
+                    ),
+                ),
+                1
+            ),
+            DiscordConfig(null, null, null, "!", null),
+            PewPewConfig(
+                mapOf(
+                    "copper-gun" to PewPew.Stats.DEFAULT,
+                ),
+                mapOf(
+                    "alpha" to mapOf("copper" to "copper-gun"),
+                    "beta" to mapOf("copper" to "copper-gun"),
+                    "gamma" to mapOf("copper" to "copper-gun"),
+                )
+            )
+        )
 
         fun load(): Config {
-            val file = java.io.File(PATH)
+            java.io.File(PATH).mkdirs()
 
-            if (!file.exists()) {
-                val json = Json {
-                    prettyPrint = true
+            val fields = mutableListOf<Any>()
+
+            for (prop in Config::class.primaryConstructor!!.parameters) {
+                val file = java.io.File(PATH + prop.name + ".json")
+
+                val serde = Json.serializersModule.serializer(prop.type);
+                if (!file.exists()) {
+                    file.createNewFile()
+                    val default = Config::class.declaredMemberProperties
+                        .find { it.name == prop.name }!!.get(default)
+                    file.writeText(Json {
+                        prettyPrint = true
+                    }.encodeToString(serde, default));
                 }
-                val new = Config(
-                    hashMapOf(
-                        Rank.GRIEFER to Rank("pink", BlockProtectionRank.Griefer, 0, true),
-                        Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
-                        Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
-                        Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 1, false),
-                        "dev" to Rank("purple", BlockProtectionRank.Member, 100, true),
-                        "owner" to Rank("gold", BlockProtectionRank.Member, 100, true),
-                    ),
-                    listOf(
-                        TestQuestion(
-                            mapOf("en_US" to "What is the capital of France?"),
-                            listOf(mapOf("en_Us" to "Paris"), mapOf("en_US" to "London"), mapOf("en_US" to "Berlin"))
-                        ),
-                        TestQuestion(
-                            mapOf("en_US" to "Which question is this?"),
-                            listOf(mapOf("en_US" to "2"), mapOf("en_US" to "3"), mapOf("en_US" to "1"))
-                        ),
-                        TestQuestion(
-                            mapOf("en_US" to "What is the capital of Italy?"),
-                            listOf(mapOf("en_US" to "Rome"), mapOf("en_US" to "London"), mapOf("en_US" to "Paris"))
-                        ),
-                    ),
-                    1,
-                    DiscordConfig(null, null, null, "!", null),
-                    PewPewConfig(
-                        mapOf(
-                            "copper-gun" to PewPew.Stats.DEFAULT,
-                        ),
-                        mapOf(
-                            "alpha" to mapOf("copper" to "copper-gun"),
-                            "beta" to mapOf("copper" to "copper-gun"),
-                            "gamma" to mapOf("copper" to "copper-gun"),
-                        )
-                    )
-                )
-                file.createNewFile()
-                file.writeText(json.encodeToString(new))
-                return new
+
+                fields.add(Json.decodeFromString(serde, file.readText())!!)
             }
 
-            return Json.decodeFromString<Config>(file.readText())
+            return Config::class.primaryConstructor!!
+                .call(*fields.toTypedArray())
         }
     }
 }
