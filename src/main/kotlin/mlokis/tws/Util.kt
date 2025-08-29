@@ -9,8 +9,10 @@ import mindustry.entities.Effect
 import mindustry.entities.bullet.BulletType
 import mindustry.content.Blocks
 import mindustry.type.Item
+import mindustry.type.Liquid
 import mindustry.type.UnitType
 import mindustry.world.blocks.defense.turrets.ItemTurret
+import mindustry.world.blocks.defense.turrets.LiquidTurret
 import mindustry.world.blocks.defense.turrets.PowerTurret
 
 object Util {
@@ -64,6 +66,21 @@ object Util {
 
             return turret.ammoTypes.get(item) ?: error(
                 "item '${parts[1]}' does not have ammo type for turret '${parts[0]}', available items are: ${
+                    turret.ammoTypes.joinToString(", ") { it.key.name }
+                }"
+            )
+        }
+
+        if (turret is LiquidTurret) {
+            val liquid = property(parts[1], Liquid::class.java) ?: error(
+                "liquid '${parts[1]}' does not exist, allowed liquids : ${
+                    propertyNameList(Liquid::class.java)
+                }"
+            )
+
+
+            return turret.ammoTypes.get(liquid as Liquid) ?: error(
+                "liquid '${parts[1]}' does not have ammo type for turret '${parts[0]}', available liquids are: ${
                     turret.ammoTypes.joinToString(", ") { it.key.name }
                 }"
             )

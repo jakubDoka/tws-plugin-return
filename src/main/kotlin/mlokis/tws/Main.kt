@@ -473,7 +473,7 @@ class Main : Plugin() {
             val err = db.loadPlayer(event.player)
             if (err != null) {
                 event.player.send(err)
-                displayDiscordInvite(event.player)
+                greetNewUser(event.player)
             } else {
                 event.player.send("hello.user", "name" to event.player.plainName())
             }
@@ -518,6 +518,11 @@ class Main : Plugin() {
             }
             doubleTaps.remove(event.player.uuid())
         }
+    }
+
+    fun greetNewUser(player: Player) {
+        displayDiscordInvite(player)
+        Call.infoPopup(player.con, player.fmt("intro"), 10f, arc.util.Align.topRight, 160, 0, 0, 10)
     }
 
     fun registerDiscordCommands(handler: CommandHandler) {
@@ -674,6 +679,25 @@ class Main : Plugin() {
                 }
 
                 callbalck(args, player)
+            }
+        }
+
+        register("explain", "<griefer/rewind/pew-pew/account>", "explain the features of this server") { args, player ->
+            val feature = args[0]
+
+            when (feature) {
+                "griefer" -> player.send(player.fmt("explain.griefer"))
+                "rewind" -> player.send(
+                    player.fmt(
+                        "explain.rewind",
+                        "grace-period" to config.rewind.gracePeriodMin,
+                        "rewind-minutes" to config.rewind.maxSaves * config.rewind.saveSpacingMin
+                    )
+                )
+
+                "pew-pew" -> player.send(player.fmt("explain.pew-pew"))
+                "account" -> player.send(player.fmt("explain.account"))
+                else -> player.send("explain.unknown-feature", "feature" to feature)
             }
         }
 
@@ -1100,7 +1124,7 @@ class Main : Plugin() {
             "mark a player as griefer, this can be only undone by admin"
         ) { args, player ->
 
-            if (Groups.player.size() < 3) {
+            if (Groups.player.size() < 3 && !player.admin) {
                 player.send("votekick.not-enough-players")
                 return@register
             }
@@ -1134,12 +1158,6 @@ class Main : Plugin() {
 
             if (db.isGriefer(target.info)) {
                 player.send("votekick.already-marked")
-                return@register
-            }
-
-            if (player.admin) {
-                db.markGriefer(target.info)
-                player.send("votekick.marked")
                 return@register
             }
 
@@ -1214,11 +1232,11 @@ class Main : Plugin() {
                 }
             }
 
-            if (session.yeaVotes >= session.neededVotes) {
+            if (session.yeaVotes >= session.neededVotes || (vote == "y" && player.admin)) {
                 session.onPass()
                 voteSessions.remove(session)
                 sendToAll("vote.vote-passed", "for" to session.onDisplay())
-            } else if (session.nayVotes >= session.neededVotes) {
+            } else if (session.nayVotes >= session.neededVotes || (vote == "n" && player.admin)) {
                 voteSessions.remove(session)
                 sendToAll("vote.vote-canceled")
             }
