@@ -33,6 +33,7 @@ import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import kotlin.math.absoluteValue
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -123,6 +124,9 @@ class Main : Plugin() {
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
     var gameStartTime = 0L
+    var grieferMarkTime = 0L
+    var serverCommandHandler: CommandHandler? = null
+    var rewindSaverTask: arc.util.Timer.Task? = null
     val bot: JDA? = run {
         JDABuilder
             .createLight(
@@ -160,19 +164,18 @@ class Main : Plugin() {
         val nay = mutableMapOf<Player, Int>()
         var timeRemining = 60 * 2
         val neededVotes: Int
+            get() = run {
+                var needed = 0
+                for (player in Groups.player) {
+                    val rank = db.getRank(player)
+                    val rankObj = config.getRank(player, rank) ?: continue
+                    needed += rankObj.voteWeight
+                }
+                if (needed % 2 == 1) needed += 1
+                needed /= 2
 
-        init {
-            var needed = 0
-            for (player in Groups.player) {
-                val rank = db.getRank(player)
-                val rankObj = config.getRank(player, rank) ?: continue
-                needed += rankObj.voteWeight
+                needed
             }
-            if (needed % 2 == 1) needed += 1
-            needed /= 2
-
-            neededVotes = needed
-        }
 
         val yeaVotes: Int
             get() = yea.values.fold(0) { acc, weight -> acc + weight }
@@ -188,10 +191,31 @@ class Main : Plugin() {
 
         fun display(idx: Int): String {
             return "${initiator.plainName()}[] wants to ${onDisplay()}, [yellow]${neededVotes}[] votes needed" +
-                    " (#$idx [green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s)"
+                    " ([green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s) (use /vote y #$idx)"
         }
     }
 
+    fun listSaves(): List<Long> {
+        return java.io.File("config/saves/")
+            .listFiles()
+            .map { it.name.replace(".msav", "").toLongOrNull() }
+            .filterNotNull()
+            .sortedByDescending { it }
+    }
+
+    fun applyConfig() {
+        pewPew.reload(config.pewPew)
+
+        rewindSaverTask?.cancel()
+        rewindSaverTask = arc.util.Timer.schedule({
+            val saves = listSaves()
+            for (i in saves.drop(config.rewind.maxSaves)) {
+                java.io.File("config/saves/${i}.msav").delete()
+            }
+
+            serverCommandHandler?.handleMessage("save ${System.currentTimeMillis()}")
+        }, 10f, config.rewind.saveSpacingMin.toFloat() * 60f)
+    }
 
     fun forwardDiscordMessage(message: DiscordMessage) {
         val inGameName = db.getPlayerNameByDiscordId(message.senderId)
@@ -292,7 +316,7 @@ class Main : Plugin() {
             }
         }
 
-        pewPew.reload(config.pewPew)
+        applyConfig()
 
         // HUD
         arc.util.Timer.schedule({
@@ -484,6 +508,7 @@ class Main : Plugin() {
             playerActivityByUuid.clear()
             interactions.clear()
             gameStartTime = System.currentTimeMillis()
+            listSaves().forEach { java.io.File("config/saves/${it}.msav").delete() }
         }
 
         arc.Events.on(EventType.PlayerLeave::class.java) { event ->
@@ -527,6 +552,8 @@ class Main : Plugin() {
     }
 
     override fun registerServerCommands(handler: CommandHandler) {
+        serverCommandHandler = handler
+
         discordCommands.register(
             "server-cmd",
             "[args...]",
@@ -582,7 +609,7 @@ class Main : Plugin() {
         handler.register("reload-config", "reload config files in ${Config.PATH}") {
             try {
                 config = Config.load()
-                pewPew.reload(config.pewPew)
+                applyConfig()
             } catch (e: Exception) {
                 err("Error reloading config file at ${Config.PATH}: ${e.message}")
                 e.printStackTrace()
@@ -650,6 +677,50 @@ class Main : Plugin() {
             }
         }
 
+        class RewindSession(initiator: Player, val minutes: Int) : VoteSession(initiator) {
+            override val translationKey = "rewind"
+
+            override fun onDisplay(): String = "rewind the game by [yellow]${minutes}[] minutes"
+
+            override fun onPass() {
+                val saveFileName = java.io.File("config/saves/")
+                    .listFiles()
+                    .map { it.name.replace(".msav", "").toLongOrNull() }
+                    .filterNotNull()
+                    .minBy {
+                        (System.currentTimeMillis() - minutes * 1000 * 60 - it)
+                            .absoluteValue
+                    }
+
+                sendToAll("rewind will temporarily stop the server in 5 seconds, you can join immediately")
+
+                arc.util.Timer.schedule({
+                    serverCommandHandler!!.handleMessage("stop")
+                    serverCommandHandler!!.handleMessage("load $saveFileName")
+                }, 5f)
+            }
+        }
+
+        register("rewind", "<minutes>", "starts a vote to rewind the game by <minutes>") { args, player ->
+            val minutes = args[0].toIntOrNull() ?: run {
+                player.send("minutes must be a number")
+                return@register
+            }
+
+            if (minutes < 0) {
+                player.send("you can't rewind into the future")
+                return@register
+            }
+
+            if (System.currentTimeMillis() - grieferMarkTime > config.rewind.gracePeriodMin * 60 * 1000) {
+                player.send("rewind is only applicable ${config.rewind.gracePeriodMin} minutes after a griefer mark")
+                return@register
+            }
+
+            voteSessions.add(RewindSession(player, minutes))
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
+        }
+
         val buildCoreBlock = mapOf(
             Blocks.vault to Blocks.coreShard,
             Blocks.reinforcedVault to Blocks.coreBastion,
@@ -662,15 +733,15 @@ class Main : Plugin() {
                 "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[]"
 
             override fun onPass() {
-                if (!itemModule.has(Blocks.coreShard.requirements)) {
-                    sendToAll("core build failed because you are missing resources")
-                    return
-                }
-
                 val toBuild = buildCoreBlock[tile.build?.block] ?: run {
                     sendToAll("core build failed because the tile is no longer a ${buildCoreBlock.keys.joinToString(" or ")}")
                     return
                 };
+
+                if (!itemModule.has(toBuild.requirements)) {
+                    sendToAll("core build failed because you are missing resources")
+                    return
+                }
 
                 itemModule.remove(toBuild.requirements)
 
@@ -692,7 +763,13 @@ class Main : Plugin() {
                 return@register
             }
 
-            if (!core.items.has(Blocks.coreShard.requirements)) {
+            val toBuild = buildCoreBlock[tile.build?.block] ?: run {
+                player.send("core can only be built on a ${buildCoreBlock.keys.joinToString(" or ")}")
+                return@register
+            };
+
+
+            if (!core.items.has(toBuild.requirements)) {
                 val sb = StringBuilder("you are missing resources to build a core, the requirements are: ")
                 var first = true
                 for (req in Blocks.coreShard.requirements) {
@@ -705,11 +782,6 @@ class Main : Plugin() {
                 player.send(sb.toString())
                 return@register
             }
-
-            val toBuild = buildCoreBlock[tile.build?.block] ?: run {
-                player.send("core can only be built on a ${buildCoreBlock.keys.joinToString(" or ")}")
-                return@register
-            };
 
             voteSessions.add(BuildCoreSession(player, tile, core.items))
             handler.handleMessage("/vote y #${voteSessions.size}", player)
@@ -1016,7 +1088,10 @@ class Main : Plugin() {
             override fun onDisplay(): String =
                 "mark [pink]${target.plainName()}[] a griefer because [yellow]${reason}[]"
 
-            override fun onPass() = db.markGriefer(target.info)
+            override fun onPass() {
+                grieferMarkTime = System.currentTimeMillis()
+                db.markGriefer(target.info)
+            }
         }
 
         register(
@@ -1229,6 +1304,9 @@ data class TestQuestion(val question: Map<String, String>, val answers: List<Map
 data class PewPewConfig(val def: Map<String, PewPew.Stats>, val links: Map<String, Map<String, String>>)
 
 @Serializable
+data class RewindConfig(val gracePeriodMin: Int, val maxSaves: Int, val saveSpacingMin: Int)
+
+@Serializable
 data class DiscordConfig(
     val bridgeChannelId: ULong?,
     val commandsChannelId: ULong?,
@@ -1246,6 +1324,7 @@ data class Config(
     val test: TestConfig,
     val discord: DiscordConfig,
     val pewPew: PewPewConfig,
+    val rewind: RewindConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -1263,8 +1342,8 @@ data class Config(
                 Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
                 Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
                 Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 1, false),
-                "dev" to Rank("purple", BlockProtectionRank.Member, 100, true),
-                "owner" to Rank("gold", BlockProtectionRank.Member, 100, true),
+                "dev" to Rank("purple", BlockProtectionRank.Member, 1, true),
+                "owner" to Rank("gold", BlockProtectionRank.Member, 1, true),
             ),
             TestConfig(
                 listOf(
@@ -1297,7 +1376,8 @@ data class Config(
                     "beta" to mapOf("copper" to "copper-gun"),
                     "gamma" to mapOf("copper" to "copper-gun"),
                 )
-            )
+            ),
+            RewindConfig(5, 15, 1)
         )
 
         fun load(): Config {
