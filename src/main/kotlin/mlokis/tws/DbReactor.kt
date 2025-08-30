@@ -209,7 +209,7 @@ class DbReactor(val config: Config) {
         return resultSet.next()
     }
 
-    fun markGriefer(player: Administration.PlayerInfo) {
+    fun markGriefer(player: Administration.PlayerInfo, reason: String) {
         // TODO: we could batch
         qs.markGriefer.setString(1, player.id)
         try {
@@ -230,7 +230,7 @@ class DbReactor(val config: Config) {
         }
 
         Groups.player.find { it.uuid() == player.id }?.stateKick("marked-griefer")
-        info("marked ${player.id} as griefer")
+        info("marked ${player.id} as griefer: $reason")
     }
 
     fun unmarkGriefer(player: Administration.PlayerInfo) {
@@ -247,6 +247,7 @@ class DbReactor(val config: Config) {
     }
 
     fun getRank(player: Player): String {
+        if (isGriefer(player.info)) return Rank.GRIEFER
         qs.getRank.setString(1, player.uuid())
         val resultSet = qs.getRank.executeQuery()
         if (!resultSet.next()) return Rank.GUEST
@@ -304,7 +305,7 @@ class DbReactor(val config: Config) {
                         response.security.proxy || response.security.relay
                     ) {
                         arc.Core.app.post {
-                            markGriefer(player.info)
+                            markGriefer(player.info, "using a VPN/TOR/proxy/relay")
                             player.markKick("using a VPN/TOR/proxy/relay")
                             info("banned ${player.name} for using a VPN/TOR/proxy/relay")
                         }

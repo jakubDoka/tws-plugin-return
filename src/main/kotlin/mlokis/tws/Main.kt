@@ -107,12 +107,14 @@ fun Long.displayTime(): String {
     val hours = (this / 1000 / 60 / 60) % 24
     val minutes = (this / 1000 / 60) % 60
     val seconds = (this / 1000) % 60
+    val milliseconds = (this % 1000).toInt()
 
     val sb = StringBuilder()
     if (days > 0) sb.append("${days}d")
     if (hours > 0) sb.append("${hours}h")
     if (minutes > 0) sb.append("${minutes}m")
     if (seconds > 0) sb.append("${seconds}s")
+    if (milliseconds > 0) sb.append("${milliseconds}ms")
 
     return sb.toString()
 }
@@ -237,7 +239,6 @@ class Main : Plugin() {
             event.message.channel.sendMessage("wrong channel for commands, use <#${config.discord.commandsChannelId}>")
             return
         }
-
 
         arc.Core.app.post {
             val res = discordCommands.handleMessage(event.message.contentRaw, event)
@@ -387,10 +388,38 @@ class Main : Plugin() {
             MessageChannel::class.java,
             config.discord.bridgeChannelId.toString()
         ) else null
+
+        mindustry.Vars.netServer.admins.chatFilters.clear() // we ll define our own
         mindustry.Vars.netServer.admins.addChatFilter { player, message ->
             if (player == null) return@addChatFilter message
-            playerActivityByUuid.getOrPut(player.uuid())
-            { PlayerActivityTracker() }.onAction(player)
+
+            val rankName = db.getRank(player)
+            val rank = config.getRank(player, rankName) ?: return@addChatFilter null
+
+            if (System.currentTimeMillis() - player.info.lastMessageTime < rank.messageTimeout && !player.admin) {
+                player.send("message.cooldown", "time" to (rank.messageTimeout).displayTime())
+
+                player.info.messageInfractions++
+
+                if (player.info.messageInfractions > Administration.Config.messageSpamKick.num() &&
+                    Administration.Config.messageSpamKick.num() != 0
+                ) {
+                    db.markGriefer(player.info, "spamming")
+                }
+
+                return@addChatFilter null
+            }
+
+            if (player.info.lastSentMessage == message) {
+                player.send("message.duplicate")
+                return@addChatFilter null
+            }
+
+            player.info.messageInfractions = 0
+            player.info.lastMessageTime = System.currentTimeMillis()
+            player.info.lastSentMessage = message
+
+            playerActivityByUuid.getOrPut(player.uuid()) { PlayerActivityTracker() }.onAction(player)
 
             if (channel != null) {
                 val name = db.getPlayerNameByUuid(player.uuid())
@@ -635,7 +664,7 @@ class Main : Plugin() {
             val action = args[0]
             val nameOrId = args[1]
 
-            val player = Groups.player.find { it.plainName().contentEquals(nameOrId, true) }
+            val player = Groups.player.find { it.plainName().contains(nameOrId, true) }
             val info = if (player != null) player.info else Vars.netServer.admins.getInfoOptional(nameOrId)
 
             if (info == null) {
@@ -644,7 +673,7 @@ class Main : Plugin() {
             }
 
             when (action) {
-                "add" -> db.markGriefer(info)
+                "add" -> db.markGriefer(info, "manually marked")
                 "remove" -> db.unmarkGriefer(info)
                 else -> err("expected add or remove")
             }
@@ -660,7 +689,7 @@ class Main : Plugin() {
             }
         }
 
-        handler.register("set-rank", "<@name/#uuid> <rank>", "set rank of a player") { args ->
+        handler.register("set-rank", "<name/uuid> <rank>", "set rank of a player") { args ->
             val rank = args[1]
 
             if (rank == Rank.GRIEFER) {
@@ -675,20 +704,8 @@ class Main : Plugin() {
             }
 
             val nameOrId = args[0]
-            var name: String? = null
-
-            if (nameOrId.startsWith("#")) {
-                val id = nameOrId.substring(1)
-                name = db.getPlayerNameByUuid(id)
-            } else if (nameOrId.startsWith("@")) {
-                name = nameOrId.substring(1)
-                if (!db.playerExists(name)) name = null
-            } else {
-                err("expected name starting with @ or uuid starting with #")
-                return@register
-            }
-
-            if (name == null) {
+            var name = db.getPlayerNameByUuid(nameOrId) ?: nameOrId
+            if (!db.playerExists(name)) {
                 err("player not found")
                 return@register
             }
@@ -770,13 +787,13 @@ class Main : Plugin() {
                 return@register
             }
 
-            if (minutes < 0) {
-                player.send("you can't rewind into the future")
+            if (minutes <= 0) {
+                player.send("you can't rewind into the future/present")
                 return@register
             }
 
-            if (System.currentTimeMillis() - grieferMarkTime > config.rewind.gracePeriodMin * 60 * 1000) {
-                player.send("rewind is only applicable ${config.rewind.gracePeriodMin} minutes after a griefer mark")
+            if (System.currentTimeMillis() - grieferMarkTime > config.rewind.gracePeriodMin * 60 * 1000 && !player.admin) {
+                player.send("rewind is only applicable ${config.rewind.gracePeriodMin} minutes after a griefer mark, or by an admin")
                 return@register
             }
 
@@ -1234,7 +1251,7 @@ class Main : Plugin() {
 
                 override fun onPass() {
                     grieferMarkTime = System.currentTimeMillis()
-                    db.markGriefer(target.info)
+                    db.markGriefer(target.info, reason)
                 }
             })
 
@@ -1431,12 +1448,48 @@ data class Config(
 
         val default = Config(
             hashMapOf(
-                Rank.GRIEFER to Rank("pink", BlockProtectionRank.Griefer, 0, true),
-                Rank.GUEST to Rank("", BlockProtectionRank.Guest, 1, false),
-                Rank.NEWCOMER to Rank("", BlockProtectionRank.Unverified, 1, false),
-                Rank.VERIFIED to Rank("", BlockProtectionRank.Member, 1, false),
-                "dev" to Rank("purple", BlockProtectionRank.Member, 1, true),
-                "owner" to Rank("gold", BlockProtectionRank.Member, 1, true),
+                Rank.GRIEFER to Rank(
+                    color = "pink",
+                    blockProtectionRank = BlockProtectionRank.Griefer,
+                    voteWeight = 0,
+                    visible = true,
+                    messageTimeout = 1000 * 10,
+                ),
+                Rank.GUEST to Rank(
+                    color = "",
+                    blockProtectionRank = BlockProtectionRank.Guest,
+                    voteWeight = 1,
+                    visible = true,
+                    messageTimeout = 1000 * 2,
+                ),
+                Rank.NEWCOMER to Rank(
+                    color = "",
+                    blockProtectionRank = BlockProtectionRank.Unverified,
+                    voteWeight = 1,
+                    visible = false,
+                    messageTimeout = 1000 * 1,
+                ),
+                Rank.VERIFIED to Rank(
+                    color = "",
+                    blockProtectionRank = BlockProtectionRank.Member,
+                    voteWeight = 1,
+                    visible = false,
+                    messageTimeout = 800,
+                ),
+                "dev" to Rank(
+                    color = "purple",
+                    blockProtectionRank = BlockProtectionRank.Member,
+                    voteWeight = 1,
+                    visible = true,
+                    messageTimeout = 0,
+                ),
+                "owner" to Rank(
+                    color = "gold",
+                    blockProtectionRank = BlockProtectionRank.Member,
+                    voteWeight = 1,
+                    visible = true,
+                    messageTimeout = 0,
+                ),
             ),
             TestConfig(
                 listOf(
@@ -1470,7 +1523,11 @@ data class Config(
                     "gamma" to mapOf("copper" to "copper-gun"),
                 )
             ),
-            RewindConfig(5, 15, 1)
+            RewindConfig(
+                gracePeriodMin = 5,
+                maxSaves = 15,
+                saveSpacingMin = 1,
+            )
         )
 
         fun load(): Config {
@@ -1506,6 +1563,7 @@ data class Rank(
     val color: String,
     val blockProtectionRank: BlockProtectionRank,
     val voteWeight: Int,
+    val messageTimeout: Long,
     val visible: Boolean,
 ) {
     companion object {
