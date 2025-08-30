@@ -450,6 +450,17 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.BlockBuildEndEvent::class.java) { event ->
+            if (event.unit.player != null) {
+                val name = db.getPlayerNameByUuid(event.unit.player.uuid())
+                if (name != null) {
+                    if (event.breaking) {
+                        db.addBlockBroken(name)
+                    } else {
+                        db.addBlockPlaced(name)
+                    }
+                }
+            }
+
             if (event.breaking) {
                 permissionTable.remove(event.tile)
             }
@@ -468,6 +479,14 @@ class Main : Plugin() {
             }
         }
 
+        // We do it this way because nobody wants to handle
+        // all the cases when player gets disconnected
+        arc.util.Timer.schedule({
+            for (player in Groups.player) {
+                val name = db.getPlayerNameByUuid(player.uuid()) ?: continue
+                db.addPlayTime(name, 60 * 1000)
+            }
+        }, 0f, 60f)
 
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
             val err = db.loadPlayer(event.player)
@@ -501,6 +520,14 @@ class Main : Plugin() {
             }
 
             doubleTaps[it.player.uuid()] = TapData(it.tile)
+        }
+
+        arc.Events.on(EventType.GameOverEvent::class.java) { event ->
+            val elapsed = System.currentTimeMillis() - gameStartTime
+            db.saveMapScore(
+                Vars.state.map.name(), Vars.state.wave, elapsed,
+                event.winner == Team.derelict
+            )
         }
 
         arc.Events.on(EventType.PlayEvent::class.java) { event ->
@@ -590,6 +617,18 @@ class Main : Plugin() {
                 CommandHandler.ResponseType.noCommand -> error("should not happen")
                 CommandHandler.ResponseType.valid -> {}
             }
+        }
+
+
+        handler.register(
+            "migrate-db",
+            "<file>",
+            "migrate the database by running the sql commands in <file>, dont forget to back up the db"
+        ) { args ->
+            val commands = object {}.javaClass
+                .getResource("/migrations/${args[0]}.sql")!!
+                .readText()
+            db.migrate(commands)
         }
 
         handler.register("griefer", "<add/remove> <username/id>", "mark or unpark a griefer") { args ->
@@ -682,6 +721,29 @@ class Main : Plugin() {
             }
         }
 
+        register(
+            "player-stats",
+            "[name]",
+            "show the stats of a player, if no name is given, shows your own"
+        ) { args, player ->
+            val name = if (args.isNotEmpty()) args[0] else db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("you need to be logged in")
+                return@register
+            }
+
+            val playerScore = db.getPlayerScore(name) ?: run {
+                player.send("player $name not found")
+                return@register
+            }
+
+            player.send(
+                "[orange]-- $name --[]\n" +
+                        "\t[yellow]${playerScore.blocksBroken}[] blocks broken\n" +
+                        "\t[yellow]${playerScore.blocksPlaced}[] blocks placed" +
+                        "\n[yellow]${playerScore.playTime.displayTime()}[] play time"
+            )
+        }
+
         register("explain", "<griefer/rewind/pew-pew/account>", "explain the features of this server") { args, player ->
             val feature = args[0]
 
@@ -701,29 +763,6 @@ class Main : Plugin() {
             }
         }
 
-        class RewindSession(initiator: Player, val minutes: Int) : VoteSession(initiator) {
-            override val translationKey = "rewind"
-
-            override fun onDisplay(): String = "rewind the game by [yellow]${minutes}[] minutes"
-
-            override fun onPass() {
-                val saveFileName = java.io.File("config/saves/")
-                    .listFiles()
-                    .map { it.name.replace(".msav", "").toLongOrNull() }
-                    .filterNotNull()
-                    .minBy {
-                        (System.currentTimeMillis() - minutes * 1000 * 60 - it)
-                            .absoluteValue
-                    }
-
-                sendToAll("rewind will temporarily stop the server in 5 seconds, you can join immediately")
-
-                arc.util.Timer.schedule({
-                    serverCommandHandler!!.handleMessage("stop")
-                    serverCommandHandler!!.handleMessage("load $saveFileName")
-                }, 5f)
-            }
-        }
 
         register("rewind", "<minutes>", "starts a vote to rewind the game by <minutes>") { args, player ->
             val minutes = args[0].toIntOrNull() ?: run {
@@ -741,7 +780,30 @@ class Main : Plugin() {
                 return@register
             }
 
-            voteSessions.add(RewindSession(player, minutes))
+
+            voteSessions.add(object : VoteSession(player) {
+                override val translationKey = "rewind"
+
+                override fun onDisplay(): String = "rewind the game by [yellow]${minutes}[] minutes"
+
+                override fun onPass() {
+                    val saveFileName = java.io.File("config/saves/")
+                        .listFiles()
+                        .map { it.name.replace(".msav", "").toLongOrNull() }
+                        .filterNotNull()
+                        .minBy {
+                            (System.currentTimeMillis() - minutes * 1000 * 60 - it)
+                                .absoluteValue
+                        }
+
+                    sendToAll("rewind will temporarily stop the server in 5 seconds, you can join immediately")
+
+                    arc.util.Timer.schedule({
+                        serverCommandHandler!!.handleMessage("stop")
+                        serverCommandHandler!!.handleMessage("load $saveFileName")
+                    }, 5f)
+                }
+            })
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
@@ -749,36 +811,6 @@ class Main : Plugin() {
             Blocks.vault to Blocks.coreShard,
             Blocks.reinforcedVault to Blocks.coreBastion,
         )
-
-        class BuildCoreSession(initiator: Player, val tile: Tile, val itemModule: ItemModule) : VoteSession(initiator) {
-            override val translationKey = "build-core"
-
-            override fun onDisplay(): String =
-                "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[]"
-
-            override fun onPass() {
-                val toBuild = buildCoreBlock[tile.build?.block] ?: run {
-                    sendToAll("core build failed because the tile is no longer a ${buildCoreBlock.keys.joinToString(" or ")}")
-                    return
-                };
-
-                if (!itemModule.has(toBuild.requirements)) {
-                    sendToAll("core build failed because you are missing resources")
-                    return
-                }
-
-                itemModule.remove(toBuild.requirements)
-
-                mindustry.gen.Call.constructFinish(
-                    tile.build.tile,
-                    toBuild,
-                    null,
-                    0,
-                    initiator.team(),
-                    null
-                );
-            }
-        }
 
         register("build-core", "", "build a core at your location") { args, player ->
             var tile = Vars.world.tile(player.tileX(), player.tileY())
@@ -807,7 +839,41 @@ class Main : Plugin() {
                 return@register
             }
 
-            voteSessions.add(BuildCoreSession(player, tile, core.items))
+            voteSessions.add(object : VoteSession(player) {
+                override val translationKey = "build-core"
+
+                override fun onDisplay(): String =
+                    "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[]"
+
+                override fun onPass() {
+                    val toBuild = buildCoreBlock[tile.build?.block] ?: run {
+                        sendToAll(
+                            "core build failed because the tile is no longer a ${
+                                buildCoreBlock.keys.joinToString(
+                                    " or "
+                                )
+                            }"
+                        )
+                        return
+                    };
+
+                    if (!core.items.has(toBuild.requirements)) {
+                        sendToAll("core build failed because you are missing resources")
+                        return
+                    }
+
+                    core.items.remove(toBuild.requirements)
+
+                    mindustry.gen.Call.constructFinish(
+                        tile.build.tile,
+                        toBuild,
+                        null,
+                        0,
+                        initiator.team(),
+                        null
+                    );
+                }
+            })
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
@@ -836,53 +902,67 @@ class Main : Plugin() {
             player.sendMessage(result.toString());
         }
 
-        class SwitchMapSession(
-            initiator: Player,
-            val map: mindustry.maps.Map,
-        ) : VoteSession(initiator) {
-            override val translationKey = "map"
-
-            override fun onDisplay(): String = "change map to [yellow]${map.name()}[] (and end current game)"
-
-            override fun onPass() {
-                val reload = WorldReloader()
-
-                reload.begin()
-
-
-                Vars.world.loadMap(map, map.applyRules(Gamemode.survival))
-                Vars.state.rules = Vars.state.map.applyRules(Gamemode.survival)
-                Vars.logic.play()
-
-                reload.end()
-            }
-        }
-
-        register("switch-map", "<#map-id/map-name>", "start a vote to switch to a map") { args, player ->
-            val mapId = args[0]
+        fun getMap(player: Player, mapId: String): mindustry.maps.Map? {
             val allMaps = Vars.maps.all()
 
-            val map: mindustry.maps.Map
-            if (mapId.startsWith("#")) {
+            return if (mapId.startsWith("#")) {
                 val id = mapId.substring(1).toIntOrNull() ?: run {
                     player.send("switch-map.id-nan")
-                    return@register
+                    return null
                 }
 
                 if (id !in 1..allMaps.size) {
                     player.send("switch-map.id-oob", "max-id" to allMaps.size)
-                    return@register
+                    return null
                 }
 
-                map = allMaps[id - 1]
+                allMaps[id - 1]
             } else {
-                map = Vars.maps.byName(args[0]) ?: run {
+                Vars.maps.byName(mapId) ?: run {
                     player.send("switch-map.map-not-found")
-                    return@register
+                    return null
                 }
             }
+        }
 
-            voteSessions.add(SwitchMapSession(player, map))
+        register("map-score", "<#map-id/map-name>", "show the score of a map") { args, player ->
+            val map = getMap(player, args[0]) ?: return@register
+
+            val score = db.getMapScore(map.name()) ?: run {
+                player.send("the map was not played yet")
+                return@register
+            }
+
+            player.send(
+                "[orange]-- ${map.name()} --[]\n" +
+                        (if (score.maxWave == 0) "" else "\t[yellow]${score.maxWave}[] waves\n") +
+                        (if (score.shortestPlaytime == Long.MAX_VALUE) "" else
+                            "\t[yellow]${score.shortestPlaytime.displayTime()}[] fastest game\n") +
+                        "\t[yellow]${score.longestPlaytime.displayTime()}[] longest game"
+            )
+        }
+
+        register("switch-map", "<#map-id/map-name>", "start a vote to switch to a map") { args, player ->
+            val map = getMap(player, args[0]) ?: return@register
+
+            voteSessions.add(object : VoteSession(player) {
+                override val translationKey = "map"
+
+                override fun onDisplay(): String = "change map to [yellow]${map.name()}[] (and end current game)"
+
+                override fun onPass() {
+                    val reload = WorldReloader()
+
+                    reload.begin()
+
+
+                    Vars.world.loadMap(map, map.applyRules(Gamemode.survival))
+                    Vars.state.rules = Vars.state.map.applyRules(Gamemode.survival)
+                    Vars.logic.play()
+
+                    reload.end()
+                }
+            })
 
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
@@ -1102,21 +1182,6 @@ class Main : Plugin() {
             player.stateKick("verified")
         }
 
-        class MarkGrieferSession(
-            initiator: Player,
-            val target: Player,
-            val reason: String,
-        ) : VoteSession(initiator) {
-            override val translationKey = "griefer"
-
-            override fun onDisplay(): String =
-                "mark [pink]${target.plainName()}[] a griefer because [yellow]${reason}[]"
-
-            override fun onPass() {
-                grieferMarkTime = System.currentTimeMillis()
-                db.markGriefer(target.info)
-            }
-        }
 
         register(
             "votekick",
@@ -1161,7 +1226,17 @@ class Main : Plugin() {
                 return@register
             }
 
-            voteSessions.add(MarkGrieferSession(player, target, reason))
+            voteSessions.add(object : VoteSession(player) {
+                override val translationKey = "griefer"
+
+                override fun onDisplay(): String =
+                    "mark [pink]${target.plainName()}[] a griefer because [yellow]${reason}[]"
+
+                override fun onPass() {
+                    grieferMarkTime = System.currentTimeMillis()
+                    db.markGriefer(target.info)
+                }
+            })
 
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }

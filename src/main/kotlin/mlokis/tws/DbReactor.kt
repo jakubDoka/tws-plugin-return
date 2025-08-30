@@ -25,9 +25,12 @@ import java.time.format.DateTimeFormatter
 const val BUG_MSG = "bug.msg"
 
 private class Queryes(val connection: Connection) {
+    // LOGIN
     val getLogin = initStmt("SELECT * FROM login WHERE uuid = ?")
     val addLogin = initStmt("INSERT INTO login (uuid, name) VALUES (?, ?)")
     val removeLogin = initStmt("DELETE FROM login WHERE uuid = ?")
+
+    // USER
     val getUser = initStmt("SELECT * FROM user WHERE name = ?")
     val getUserByUuid = initStmt(
         "SELECT * FROM user JOIN login ON" +
@@ -44,15 +47,42 @@ private class Queryes(val connection: Connection) {
     val getPlayerNameByDiscordId = initStmt("SELECT name FROM user WHERE discord_id = ?")
     val getUserDiscordId = initStmt("SELECT discord_id FROM user WHERE name = ?")
     val setDiscordId = initStmt("UPDATE user SET discord_id = ? WHERE name = ?")
+    val addBlockPlaced = initStmt("UPDATE user SET blocks_placed = blocks_placed + 1 WHERE name = ?")
+    val addBlockBroken = initStmt("UPDATE user SET blocks_broken = blocks_broken + 1 WHERE name = ?")
+    val addPlayTime = initStmt("UPDATE user SET play_time = play_time + ? WHERE name = ?")
+
+    // GRIEFER
     val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ?")
     val markGriefer = initStmt("INSERT INTO griefer (ban_key) VALUES (?)")
     val unmarkGriefer = initStmt("DELETE FROM griefer WHERE ban_key = ? OR ban_key = ?")
+
+    // TEST
     val addFailedTestSession = initStmt("INSERT INTO failed_test_sessions (name) VALUES (?)")
     val hasFailedTestSession =
         initStmt("SELECT * FROM failed_test_sessions WHERE name = ? and unixepoch() - happened_at < ? * 1000 * 60 * 60")
 
-    fun initStmt(str: String): PreparedStatement = connection.prepareStatement(str)
+    // MAP
+    val getMapScore = initStmt("SELECT * FROM map_score WHERE name = ?")
+    val setMapScore =
+        initStmt(
+            "INSERT INTO map_score (name, max_wave, shortest_playtime, longest_playtime) VALUES (?, ?, ?, ?)" +
+                    " ON CONFLICT(name) DO UPDATE SET" +
+                    " max_wave = max(max_wave, excluded.max_wave)," +
+                    " shortest_playtime = min(shortest_playtime, excluded.shortest_playtime)," +
+                    " longest_playtime = max(longest_playtime, excluded.longest_playtime)"
+        )
+
+    fun initStmt(str: String): PreparedStatement = try {
+        connection.prepareStatement(str)
+    } catch (e: SQLException) {
+        err("error preparing statement: $str")
+        e.printStackTrace()
+        connection.prepareStatement("SELECT 1")
+    }
 }
+
+data class MapScore(val maxWave: Int, val shortestPlaytime: Long, val longestPlaytime: Long)
+data class PlayerScore(val blocksBroken: Int, val blocksPlaced: Int, val playTime: Long)
 
 class DbReactor(val config: Config) {
     private val qs: Queryes
@@ -76,6 +106,60 @@ class DbReactor(val config: Config) {
         }
 
         qs = Queryes(connection)
+    }
+
+    fun addBlockPlaced(name: String) {
+        qs.addBlockPlaced.setString(1, name)
+        qs.addBlockPlaced.executeUpdate()
+    }
+
+    fun addBlockBroken(name: String) {
+        qs.addBlockBroken.setString(1, name)
+        qs.addBlockBroken.executeUpdate()
+    }
+
+    fun addPlayTime(name: String, time: Long) {
+        qs.addPlayTime.setLong(1, time)
+        qs.addPlayTime.setString(2, name)
+        qs.addPlayTime.executeUpdate()
+    }
+
+    fun getPlayerScore(name: String): PlayerScore? {
+        qs.getUser.setString(1, name)
+        val resultSet = qs.getUser.executeQuery()
+        if (!resultSet.next()) return null
+        // TODO: we might be able to reduce the boilerplate
+        return PlayerScore(
+            blocksBroken = resultSet.getInt("blocks_broken"),
+            blocksPlaced = resultSet.getInt("blocks_placed"),
+            playTime = resultSet.getLong("play_time")
+        )
+    }
+
+    fun saveMapScore(map: String, maxWave: Int, playtime: Long, won: Boolean) {
+        qs.setMapScore.setString(1, map)
+        qs.setMapScore.setInt(2, maxWave)
+        qs.setMapScore.setLong(3, if (won) playtime else Long.MAX_VALUE)
+        qs.setMapScore.setLong(4, playtime)
+        qs.setMapScore.executeUpdate()
+    }
+
+    fun getMapScore(map: String): MapScore? {
+        qs.getMapScore.setString(1, map)
+        val resultSet = qs.getMapScore.executeQuery()
+        if (!resultSet.next()) return null
+        return MapScore(
+            maxWave = resultSet.getInt("max_wave"),
+            shortestPlaytime = resultSet.getLong("shortest_playtime"),
+            longestPlaytime = resultSet.getLong("longest_playtime")
+        )
+    }
+
+    fun migrate(sql: String) {
+        val statement = connection.createStatement()
+        for (stmt in sql.split(";").map { it.trim() }.filter { it.isNotEmpty() }) {
+            statement.executeUpdate(stmt)
+        }
     }
 
     fun setDiscordId(name: String, id: String) {
