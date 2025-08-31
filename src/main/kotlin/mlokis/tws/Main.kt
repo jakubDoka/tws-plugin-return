@@ -209,13 +209,18 @@ class Main : Plugin() {
         override fun log(level: Log.LogLevel, message: String) {}
     }
 
+    // this is not at all this generic
     fun noLog(callback: () -> Unit) {
         val prevLogger = Log.logger
-        Log.logger = noOpLogger
+        arc.Core.app.post {
+            Log.logger = noOpLogger
+        }
 
         callback()
 
-        Log.logger = prevLogger
+        arc.Core.app.post {
+            Log.logger = prevLogger
+        }
     }
 
     fun applyConfig() {
@@ -645,6 +650,7 @@ class Main : Plugin() {
                     "this command is disallowed here," +
                             " connect to the server directly"
                 ).queue()
+                return@register
             }
 
             val res = handler.handleMessage(args[0])
