@@ -295,12 +295,18 @@ class DbReactor(val config: Config) {
                     val response = Json {
                         ignoreUnknownKeys = true
                     }.decodeFromString<Response>(body)
-                    if (response.security.vpn || response.security.tor ||
-                        response.security.proxy || response.security.relay
-                    ) {
+
+                    val mod = if (response.security.vpn) "VPN"
+                    else if (response.security.tor) "TOR Connection"
+                    else if (response.security.proxy) "Proxy"
+                    else if (response.security.relay) "Relay"
+                    else null
+
+                    if (mod != null) {
                         arc.Core.app.post {
-                            player.markKick("using a VPN/TOR/proxy/relay")
-                            mindustry.Vars.netServer.admins.banPlayerIP(player.ip())
+                            mindustry.Vars.netServer.admins.bannedIPs.add(player.ip())
+                            mindustry.Vars.netServer.admins.save()
+                            player.kick("You have been banned for using $mod, your IP is banned but you can still play if you disable the $mod.")
                             info("banned ${player.name} for using a VPN/TOR/proxy/relay")
                         }
                     }
