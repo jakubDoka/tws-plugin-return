@@ -274,21 +274,14 @@ class DbReactor(val config: Config) {
         qs.setRank.executeUpdate()
     }
 
-    private val recentIps = mutableSetOf<String>()
-
     fun tryBanIp(player: Player) {
         val key = System.getenv("VPNAPI_KEY") ?: return
-
-        // don't waste api calls on the same ip
-        if (player.ip() in recentIps) return
-        recentIps.add(player.ip())
 
         @Serializable
         class Security(val vpn: Boolean, val tor: Boolean, val proxy: Boolean, val relay: Boolean)
 
         @Serializable
         data class Response(val security: Security)
-
 
         java.net.http.HttpClient.newHttpClient()
             .sendAsync(
@@ -306,8 +299,8 @@ class DbReactor(val config: Config) {
                         response.security.proxy || response.security.relay
                     ) {
                         arc.Core.app.post {
-                            markGriefer(player.info, "using a VPN/TOR/proxy/relay")
                             player.markKick("using a VPN/TOR/proxy/relay")
+                            mindustry.Vars.netServer.admins.banPlayerIP(player.ip())
                             info("banned ${player.name} for using a VPN/TOR/proxy/relay")
                         }
                     }
