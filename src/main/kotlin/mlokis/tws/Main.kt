@@ -479,7 +479,7 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.BlockBuildEndEvent::class.java) { event ->
-            if (event.unit.player != null) {
+            if (event?.unit?.player != null) {
                 val name = db.getPlayerNameByUuid(event.unit.player.uuid())
                 if (name != null) {
                     if (event.breaking) {
@@ -942,8 +942,8 @@ class Main : Plugin() {
             }
         }
 
-        register("map-score", "<#map-id/map-name>", "show the score of a map") { args, player ->
-            val map = getMap(player, args[0]) ?: return@register
+        register("map-score", "[#map-id/map-name]", "show the score of a map") { args, player ->
+            val map = (if (args.isNotEmpty()) getMap(player, args[0]) else Vars.state.map) ?: return@register
 
             val score = db.getMapScore(map.name()) ?: run {
                 player.send("the map was not played yet")
@@ -1277,12 +1277,10 @@ class Main : Plugin() {
                     return@register
                 }
 
-                try {
-                    index = min(max(args[1].toInt(), 1), voteSessions.size)
-                } catch (e: NumberFormatException) {
+                index = min(max(args[1].replace("#", "").toIntOrNull() ?: run {
                     player.send("votekick.expected-id")
                     return@register
-                }
+                }, 1), voteSessions.size)
             }
 
             val playerRankName = db.getRank(player)

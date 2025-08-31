@@ -242,7 +242,8 @@ class DbReactor(val config: Config) {
             qs.unmarkGriefer.executeUpdate()
         }
 
-        Groups.player.find { it.uuid() == player.id }?.stateKick("unmarked-griefer")
+        Groups.player.find { it.uuid() == player.id }
+            ?.stateKick("unmarked-griefer")
         err("unmarked ${player.id}")
     }
 
