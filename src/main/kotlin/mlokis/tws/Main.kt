@@ -205,6 +205,19 @@ class Main : Plugin() {
             .sortedByDescending { it }
     }
 
+    val noOpLogger = object : Log.LogHandler {
+        override fun log(level: Log.LogLevel, message: String) {}
+    }
+
+    fun noLog(callback: () -> Unit) {
+        val prevLogger = Log.logger
+        Log.logger = noOpLogger
+
+        callback()
+
+        Log.logger = prevLogger
+    }
+
     fun applyConfig() {
         pewPew.reload(config.pewPew)
 
@@ -214,8 +227,9 @@ class Main : Plugin() {
             for (i in saves.drop(config.rewind.maxSaves)) {
                 java.io.File("config/saves/${i}.msav").delete()
             }
-
-            serverCommandHandler?.handleMessage("save ${System.currentTimeMillis()}")
+            noLog {
+                serverCommandHandler?.handleMessage("save ${System.currentTimeMillis()}")
+            }
         }, 10f, config.rewind.saveSpacingMin.toFloat() * 60f)
     }
 
@@ -624,6 +638,13 @@ class Main : Plugin() {
                 event.channel.sendMessage("wrong channel for commands, use <#${config.discord.adminChannelId}>")
                     .queue()
                 return@register
+            }
+
+            if (args.getOrNull(0)?.split(" ")?.getOrNull(0) in config.discord.serverCmdBlacklist) {
+                event.channel.sendMessage(
+                    "this command is disallowed here," +
+                            " connect to the server directly"
+                ).queue()
             }
 
             val res = handler.handleMessage(args[0])
@@ -1421,10 +1442,37 @@ data class DiscordConfig(
     val adminChannelId: ULong?,
     val prefix: String,
     val invite: String?,
+    val serverCmdBlacklist: Set<String>,
 )
 
 @Serializable
 data class TestConfig(val questions: List<TestQuestion>, val timeout: Int)
+
+@Serializable
+data class Rank(
+    val color: String,
+    val blockProtectionRank: BlockProtectionRank,
+    val voteWeight: Int,
+    val messageTimeout: Long,
+    val visible: Boolean,
+) {
+    companion object {
+        const val GUEST = "guest"
+        const val NEWCOMER = "newcomer"
+        const val VERIFIED = "verified"
+        const val GRIEFER = "griefer"
+    }
+
+    fun display(name: String): String = if (visible) "[$color]<$name>[]" else ""
+}
+
+@Serializable
+enum class BlockProtectionRank {
+    Griefer,
+    Guest,
+    Unverified,
+    Member,
+}
 
 @Serializable
 data class Config(
@@ -1510,7 +1558,14 @@ data class Config(
                 ),
                 1
             ),
-            DiscordConfig(null, null, null, "!", null),
+            DiscordConfig(
+                bridgeChannelId = null,
+                commandsChannelId = null,
+                adminChannelId = null,
+                prefix = "$",
+                invite = null,
+                serverCmdBlacklist = setOf("stop", "exit", "migrate-db"),
+            ),
             PewPewConfig(
                 mapOf(
                     "copper-gun" to PewPew.Stats.DEFAULT,
@@ -1555,31 +1610,5 @@ data class Config(
     }
 }
 
-
-@Serializable
-data class Rank(
-    val color: String,
-    val blockProtectionRank: BlockProtectionRank,
-    val voteWeight: Int,
-    val messageTimeout: Long,
-    val visible: Boolean,
-) {
-    companion object {
-        const val GUEST = "guest"
-        const val NEWCOMER = "newcomer"
-        const val VERIFIED = "verified"
-        const val GRIEFER = "griefer"
-    }
-
-    fun display(name: String): String = if (visible) "[$color]<$name>[]" else ""
-}
-
-@Serializable
-enum class BlockProtectionRank {
-    Griefer,
-    Guest,
-    Unverified,
-    Member,
-}
 
 
