@@ -198,6 +198,9 @@ class Main : Plugin() {
     }
 
     fun listSaves(): List<Long> {
+        if (!java.io.File("config/saves/").exists()) {
+            return emptyList()
+        }
         return java.io.File("config/saves/")
             .listFiles()
             .map { it.name.replace(".msav", "").toLongOrNull() }
