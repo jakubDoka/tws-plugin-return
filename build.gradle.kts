@@ -49,3 +49,10 @@ tasks.shadowJar {
     configurations = listOf(project.configurations.runtimeClasspath.get())
     mergeServiceFiles()
 }
+
+tasks.register<JavaExec>("normalize-translations") {
+    group = "tools"
+    description = "normalize translations based on the en_US.ini"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("main.kotlin.mlokis.tws.NormalizeTranslations")
+}

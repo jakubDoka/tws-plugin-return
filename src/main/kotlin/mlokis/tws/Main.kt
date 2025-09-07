@@ -84,8 +84,18 @@ fun Player.stateKick(reason: String) = kick(
     fmt("state-kick", "reason" to fmt("state-kick.$reason")), 0
 )
 
-fun Player.fmt(message: String, vararg args: Pair<String, Any?>): String =
-    Translations.t(locale, message, *args)
+data class PlayerCapture(val fn: (Player) -> String)
+
+fun Player.fmt(message: String, vararg args: Pair<String, Any?>): String {
+    val args = args.toMutableList()
+    for (i in args.indices) {
+        if (args[i].second is PlayerCapture) {
+            args[i] = args[i].first to (args[i].second as PlayerCapture).fn(this)
+        }
+    }
+
+    return Translations.t(locale, message, *args.toTypedArray())
+}
 
 fun Player.fmtOrDefault(message: String, default: String): String {
     return if (Translations.exists(locale, message)) {
@@ -187,13 +197,21 @@ class Main : Plugin() {
 
         abstract val translationKey: String
 
-        abstract fun onDisplay(): String
+        abstract fun onDisplay(player: Player): String
 
         abstract fun onPass()
 
-        fun display(idx: Int): String {
-            return "${initiator.plainName()}[] wants to ${onDisplay()}, [yellow]${neededVotes}[] votes needed" +
-                    " ([green]${yeaVotes}[]y [red]${nayVotes}[]n [yellow]${timeRemining}[]s) (use /vote y #$idx)"
+        fun display(idx: Int, player: Player): String {
+            return player.fmt(
+                "vote.session",
+                "initiator" to initiator.plainName(),
+                "display" to onDisplay(player),
+                "needed" to neededVotes,
+                "yea" to yeaVotes,
+                "nay" to nayVotes,
+                "time" to timeRemining,
+                "idx" to idx
+            )
         }
     }
 
@@ -343,23 +361,25 @@ class Main : Plugin() {
 
         // HUD
         arc.util.Timer.schedule({
-            val toRemove = mutableListOf<VoteSession>()
-            val text = StringBuilder()
-            for ((i, session) in voteSessions.withIndex()) {
-                text.append(session.display(i))
-                text.append("\n")
+            mindustry.gen.Groups.player.forEach { player ->
+                val toRemove = mutableListOf<VoteSession>()
+                val text = StringBuilder()
+                for ((i, session) in voteSessions.withIndex()) {
+                    if (i > 0) text.append("\n")
+                    text.append(session.display(i, player))
 
-                session.timeRemining -= 1
-                if (session.timeRemining <= 0) {
-                    toRemove.add(session)
+                    session.timeRemining -= 1
+                    if (session.timeRemining <= 0) {
+                        toRemove.add(session)
+                    }
                 }
-            }
-            voteSessions.removeAll(toRemove)
+                voteSessions.removeAll(toRemove)
 
-            if (text.isEmpty()) {
-                mindustry.gen.Call.hideHudText()
-            } else {
-                mindustry.gen.Call.setHudText(text.toString())
+                if (text.isEmpty()) {
+                    mindustry.gen.Call.hideHudText(player.con)
+                } else {
+                    mindustry.gen.Call.setHudText(player.con, text.toString())
+                }
             }
         }, 0f, 1f)
 
@@ -774,20 +794,21 @@ class Main : Plugin() {
             "show the stats of a player, if no name is given, shows your own"
         ) { args, player ->
             val name = if (args.isNotEmpty()) args[0] else db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("you need to be logged in")
+                player.send("no-login")
                 return@register
             }
 
             val playerScore = db.getPlayerScore(name) ?: run {
-                player.send("player $name not found")
+                player.send("player-stats.not-found", "name" to name)
                 return@register
             }
 
             player.send(
-                "[orange]-- $name --[]\n" +
-                        "\t[yellow]${playerScore.blocksBroken}[] blocks broken\n" +
-                        "\t[yellow]${playerScore.blocksPlaced}[] blocks placed" +
-                        "\n[yellow]${playerScore.playTime.displayTime()}[] play time"
+                "player-stats.table",
+                "name" to name,
+                "blocks-broken" to playerScore.blocksBroken,
+                "blocks-placed" to playerScore.blocksPlaced,
+                "play-time" to playerScore.playTime.displayTime()
             )
         }
 
@@ -813,17 +834,17 @@ class Main : Plugin() {
 
         register("rewind", "<minutes>", "starts a vote to rewind the game by <minutes>") { args, player ->
             val minutes = args[0].toIntOrNull() ?: run {
-                player.send("minutes must be a number")
+                player.send("rewind.minutes-nan")
                 return@register
             }
 
             if (minutes <= 0) {
-                player.send("you can't rewind into the future/present")
+                player.send("rewind.into-future")
                 return@register
             }
 
             if (System.currentTimeMillis() - grieferMarkTime > config.rewind.gracePeriodMin * 60 * 1000 && !player.admin) {
-                player.send("rewind is only applicable ${config.rewind.gracePeriodMin} minutes after a griefer mark, or by an admin")
+                player.send("rewind.not-applicable", "grace-period" to config.rewind.gracePeriodMin)
                 return@register
             }
 
@@ -831,7 +852,7 @@ class Main : Plugin() {
             voteSessions.add(object : VoteSession(player) {
                 override val translationKey = "rewind"
 
-                override fun onDisplay(): String = "rewind the game by [yellow]${minutes}[] minutes"
+                override fun onDisplay(player: Player): String = player.fmt("rewind.session", "minutes" to minutes)
 
                 override fun onPass() {
                     val saveFileName = java.io.File("config/saves/")
@@ -843,7 +864,7 @@ class Main : Plugin() {
                                 .absoluteValue
                         }
 
-                    sendToAll("rewind will temporarily stop the server in 5 seconds, you can join immediately")
+                    sendToAll("rewind.foreshadowing")
 
                     arc.util.Timer.schedule({
                         serverCommandHandler!!.handleMessage("stop")
@@ -862,18 +883,18 @@ class Main : Plugin() {
         register("build-core", "", "build a core at your location") { args, player ->
             var tile = Vars.world.tile(player.tileX(), player.tileY())
             val core = Vars.state.teams[Team.sharded]?.core() ?: run {
-                player.send("no core is present")
+                player.send("build-core.no-core")
                 return@register
             }
 
             val toBuild = buildCoreBlock[tile.build?.block] ?: run {
-                player.send("core can only be built on a ${buildCoreBlock.keys.joinToString(" or ")}")
+                player.send("build-core.wrong-block", "expected" to buildCoreBlock.keys.joinToString(" or "))
                 return@register
             };
 
 
             if (!core.items.has(toBuild.requirements)) {
-                val sb = StringBuilder("you are missing resources to build a core, the requirements are: ")
+                val sb = StringBuilder()
                 var first = true
                 for (req in Blocks.coreShard.requirements) {
                     if (!first) sb.append(", ")
@@ -882,30 +903,30 @@ class Main : Plugin() {
                     sb.append(" x ")
                     sb.append(req.amount)
                 }
-                player.send(sb.toString())
+                player.send("build-core.missing-resources", "requirements" to sb.toString())
                 return@register
             }
 
             voteSessions.add(object : VoteSession(player) {
                 override val translationKey = "build-core"
 
-                override fun onDisplay(): String =
-                    "build a core at [yellow]${tile.centerX()}:${tile.centerY()}[]"
+                override fun onDisplay(player: Player): String = player.fmt(
+                    "build-core.session",
+                    "tilex" to tile.centerX().toString(),
+                    "tiley" to tile.centerY().toString(),
+                )
 
                 override fun onPass() {
                     val toBuild = buildCoreBlock[tile.build?.block] ?: run {
                         sendToAll(
-                            "core build failed because the tile is no longer a ${
-                                buildCoreBlock.keys.joinToString(
-                                    " or "
-                                )
-                            }"
+                            "build-core.failed.wrong-block",
+                            "expected" to buildCoreBlock.keys.joinToString(" or ")
                         )
                         return
                     };
 
                     if (!core.items.has(toBuild.requirements)) {
-                        sendToAll("core build failed because you are missing resources")
+                        sendToAll("build-core.failed.missing-resources")
                         return
                     }
 
@@ -995,7 +1016,8 @@ class Main : Plugin() {
             voteSessions.add(object : VoteSession(player) {
                 override val translationKey = "map"
 
-                override fun onDisplay(): String = "change map to [yellow]${map.name()}[] (and end current game)"
+                override fun onDisplay(player: Player): String =
+                    player.fmt("switch-map", "name" to map.name())
 
                 override fun onPass() {
                     val reload = WorldReloader()
@@ -1135,7 +1157,7 @@ class Main : Plugin() {
         val testSessions = mutableMapOf<String, TestSession>()
         register("tws-test-start", "", "start a test session to get verified") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("tws-test.no-login")
+                player.send("no-login")
                 return@register
             }
 
@@ -1164,7 +1186,7 @@ class Main : Plugin() {
 
         register("tws-test-show", "", "show the current test question") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("tws-test.no-login")
+                player.send("no-login")
                 return@register
             }
 
@@ -1186,7 +1208,7 @@ class Main : Plugin() {
 
         register("tws-test-answer", "<answer>", "answer a test question") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("tws-test.no-login")
+                player.send("no-login")
                 return@register
             }
 
@@ -1276,8 +1298,8 @@ class Main : Plugin() {
             voteSessions.add(object : VoteSession(player) {
                 override val translationKey = "griefer"
 
-                override fun onDisplay(): String =
-                    "mark [pink]${target.plainName()}[] a griefer because [yellow]${reason}[]"
+                override fun onDisplay(player: Player): String =
+                    player.fmt("votekick.session", "name" to target.plainName(), "reason" to reason)
 
                 override fun onPass() {
                     grieferMarkTime = System.currentTimeMillis()
@@ -1324,7 +1346,7 @@ class Main : Plugin() {
                     sendToAll(
                         "vote.voted-for",
                         "voter" to player.plainName(),
-                        "for" to session.onDisplay()
+                        "for" to PlayerCapture { session.onDisplay(it) }
                     )
                 }
 
@@ -1334,7 +1356,7 @@ class Main : Plugin() {
                     sendToAll(
                         "vote.voted-against",
                         "voter" to player.plainName(),
-                        "against" to session.onDisplay()
+                        "against" to PlayerCapture { session.onDisplay(it) }
                     )
                 }
 
@@ -1355,7 +1377,7 @@ class Main : Plugin() {
             if (session.yeaVotes >= session.neededVotes || (vote == "y" && player.admin)) {
                 session.onPass()
                 voteSessions.remove(session)
-                sendToAll("vote.vote-passed", "for" to session.onDisplay())
+                sendToAll("vote.vote-passed", "for" to PlayerCapture { session.onDisplay(it) })
             } else if (session.nayVotes >= session.neededVotes || (vote == "n" && player.admin)) {
                 voteSessions.remove(session)
                 sendToAll("vote.vote-canceled")
