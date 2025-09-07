@@ -59,6 +59,8 @@ object Translations {
             }
     }
 
+    fun assertDefault(key: String): String = maps.getValue(DEFAULT_LOCALE).getValue(key)
+
     fun t(locale: String, key: String, vararg args: Pair<String, Any?>): String {
         val default = maps[DEFAULT_LOCALE] ?: error("")
         val template = maps[locale]?.get(key) ?: default[key] ?: key
@@ -776,10 +778,9 @@ class Main : Plugin() {
         fun register(
             name: String,
             signature: String,
-            description: String,
             callbalck: (Array<String>, Player) -> Unit
         ) {
-            handler.register(name, signature, description) { args, player: Player ->
+            handler.register(name, signature, Translations.assertDefault("$name.desc")) { args, player: Player ->
                 if (db.isGriefer(player.info)) {
                     player.send("command.griefer")
                     return@register
@@ -789,11 +790,11 @@ class Main : Plugin() {
             }
         }
 
-        register(
-            "player-stats",
-            "[name]",
-            "show the stats of a player, if no name is given, shows your own"
-        ) { args, player ->
+        fun register(name: String, callbalck: (Array<String>, Player) -> Unit) {
+            register(name, "", callbalck)
+        }
+
+        register("player-stats", "[name]") { args, player ->
             val name = if (args.isNotEmpty()) args[0] else db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
                 return@register
@@ -813,10 +814,8 @@ class Main : Plugin() {
             )
         }
 
-        register("explain", "<griefer/rewind/pew-pew/account>", "explain the features of this server") { args, player ->
-            val feature = args[0]
-
-            when (feature) {
+        register("explain", "<griefer/rewind/pew-pew/account>") { args, player ->
+            when (val feature = args[0]) {
                 "griefer" -> player.send("explain.griefer")
                 "rewind" -> player.send(
                     "explain.rewind",
@@ -831,7 +830,7 @@ class Main : Plugin() {
         }
 
 
-        register("rewind", "<minutes>", "starts a vote to rewind the game by <minutes>") { args, player ->
+        register("rewind", "<minutes>") { args, player ->
             val minutes = args[0].toIntOrNull() ?: run {
                 player.send("rewind.minutes-nan")
                 return@register
@@ -879,7 +878,7 @@ class Main : Plugin() {
             Blocks.reinforcedVault to Blocks.coreBastion,
         )
 
-        register("build-core", "", "build a core at your location") { args, player ->
+        register("build-core") { args, player ->
             var tile = Vars.world.tile(player.tileX(), player.tileY())
             val core = Vars.state.teams[Team.sharded]?.core() ?: run {
                 player.send("build-core.no-core")
@@ -944,7 +943,7 @@ class Main : Plugin() {
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
-        register("list-maps", "[page]", "list all maps you can switch to") { args, player ->
+        register("list-maps", "[page]") { args, player ->
             val maps = Vars.maps.all().map { it.name() }
 
             val commandsPerPage = 10;
@@ -992,11 +991,11 @@ class Main : Plugin() {
             }
         }
 
-        register("map-score", "[#map-id/map-name]", "show the score of a map") { args, player ->
+        register("map-score", "[#map-id/map-name]") { args, player ->
             val map = (if (args.isNotEmpty()) getMap(player, args[0]) else Vars.state.map) ?: return@register
 
             val score = db.getMapScore(map.name()) ?: run {
-                player.send("the map was not played yet")
+                player.send("map-score.not-played-yet")
                 return@register
             }
 
@@ -1009,7 +1008,7 @@ class Main : Plugin() {
             )
         }
 
-        register("switch-map", "<#map-id/map-name>", "start a vote to switch to a map") { args, player ->
+        register("switch-map", "<#map-id/map-name>") { args, player ->
             val map = getMap(player, args[0]) ?: return@register
 
             voteSessions.add(object : VoteSession(player) {
@@ -1035,7 +1034,7 @@ class Main : Plugin() {
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
-        register("help", "[page]", "show help") { args, player: Player ->
+        register("help", "[page]") { args, player: Player ->
             if (args.isNotEmpty() && args[0].toIntOrNull() == null) {
                 player.send("help.page-nan");
                 return@register;
@@ -1066,80 +1065,73 @@ class Main : Plugin() {
             player.sendMessage(result.toString());
         }
 
-        register("discord-invite", "", "get the discord invite link") { args, player ->
-            if (config.discord.invite == null) {
-                player.send("discord invite link id not configured")
-                return@register
+        if (config.discord.invite != null) {
+            register("discord-invite", "") { args, player ->
+                displayDiscordInvite(player)
             }
-
-            displayDiscordInvite(player)
         }
 
-        register("connect-discord", "<discord-user-id>", "connect with your discord account") { args, player ->
-            if (bot == null) {
-                player.send("connect-discord.not-running")
-                return@register
-            }
+        if (bot != null) {
+            register("connect-discord", "<discord-user-id>") { args, player ->
 
-            val id = args[0]
+                val id = args[0]
 
-            if (id.toULongOrNull() == null) {
-                player.send("connect-discord.id-nan")
-                return@register
-            }
+                if (id.toULongOrNull() == null) {
+                    player.send("connect-discord.id-nan")
+                    return@register
+                }
 
-            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("connect-discord.not-logged-in")
-                return@register
-            }
+                val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                    player.send("connect-discord.not-logged-in")
+                    return@register
+                }
 
-            if (discordConnectionSessions.keys.any { it.endsWith(":$name") }) {
-                player.send("connect-discord.already-sent")
-            }
+                if (discordConnectionSessions.keys.any { it.endsWith(":$name") }) {
+                    player.send("connect-discord.already-sent")
+                }
 
-            val pin = Random.nextInt(1000, 9999).toString()
+                val pin = player.fmt("connect-discord.pin-message", "pin" to Random.nextInt(1000, 9999))
 
-            bot.retrieveUserById(id).queue({ user ->
-                user.openPrivateChannel().queue {
-                    it.sendMessage(
-                        "this is your pin: $pin, if you are not trying" +
-                                " to connect you TWS account to discord, ignore this message"
-                    ).queue()
+                bot.retrieveUserById(id).queue({ user ->
+                    user.openPrivateChannel().queue {
+                        it.sendMessage(pin).queue()
 
-                    arc.Core.app.post {
-                        discordConnectionSessions["$pin:$name"] = id
-                        player.send("connect-discord.success")
+                        arc.Core.app.post {
+                            discordConnectionSessions["$pin:$name"] = id
+                            player.send("connect-discord.success")
+                        }
                     }
-                }
-            }, { e ->
-                arc.Core.app.post {
-                    player.send("connect-discord.cant-find-user", "id" to id, "reason" to e.message)
-                    e.printStackTrace()
-                }
-            })
+                }, { e ->
+                    arc.Core.app.post {
+                        player.send("connect-discord.cant-find-user", "id" to id, "reason" to e.message)
+                        e.printStackTrace()
+                    }
+                })
 
-        }
-
-        register("connect-discord-confirm", "<pin>", "confirm your discord account") { args, player ->
-            val pin = args[0]
-
-            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("connect-discord.not-logged-in")
-                return@register
             }
 
-            val id = discordConnectionSessions.remove("$pin:$name") ?: run {
-                player.send("connect-discord-confirm.invalid-pin")
+            register("connect-discord-confirm", "<pin>") { args, player ->
+                val pin = args[0]
 
-                val toRemove = discordConnectionSessions.keys.filter { it.endsWith(":$name") }.toList()
-                for (key in toRemove) discordConnectionSessions.remove(key)
+                val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                    player.send("connect-discord.not-logged-in")
+                    return@register
+                }
 
-                return@register
+                val id = discordConnectionSessions.remove("$pin:$name") ?: run {
+                    player.send("connect-discord-confirm.invalid-pin")
+
+                    val toRemove = discordConnectionSessions.keys.filter { it.endsWith(":$name") }.toList()
+                    for (key in toRemove) discordConnectionSessions.remove(key)
+
+                    return@register
+                }
+
+                db.setDiscordId(name, id)
+                player.send("connect-discord-confirm.success")
             }
-
-            db.setDiscordId(name, id)
-            player.send("connect-discord-confirm.success")
         }
+
 
         class TestSession {
             var questionIndex = 0
@@ -1154,7 +1146,7 @@ class Main : Plugin() {
 
         // player name -> TestSession
         val testSessions = mutableMapOf<String, TestSession>()
-        register("tws-test-start", "", "start a test session to get verified") { args, player ->
+        register("tws-test-start") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
                 return@register
@@ -1183,7 +1175,7 @@ class Main : Plugin() {
             handler.handleMessage("/tws-test-show", player)
         }
 
-        register("tws-test-show", "", "show the current test question") { args, player ->
+        register("tws-test-show") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
                 return@register
@@ -1205,7 +1197,7 @@ class Main : Plugin() {
             }
         }
 
-        register("tws-test-answer", "<answer>", "answer a test question") { args, player ->
+        register("tws-test-answer", "<answer>") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
                 return@register
@@ -1251,11 +1243,7 @@ class Main : Plugin() {
         }
 
 
-        register(
-            "votekick",
-            "<name/#id> <reason...>",
-            "mark a player as griefer, this can be only undone by admin"
-        ) { args, player ->
+        register("votekick", "<name/#id> <reason...>") { args, player ->
 
             if (Groups.player.size() < 3 && !player.admin) {
                 player.send("votekick.not-enough-players")
@@ -1309,11 +1297,7 @@ class Main : Plugin() {
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
-        register(
-            "vote",
-            "<y/n/c> [#id]",
-            "vote for marking a griefer, admins can cancel with 'c'"
-        ) { args, player ->
+        register("vote", "<y/n/c> [#id]") { args, player ->
             val vote = args[0]
 
             if (voteSessions.isEmpty()) {
@@ -1396,7 +1380,7 @@ class Main : Plugin() {
             playerInputId++
         }
 
-        register("login", "<username>", "login to your account") { args, player ->
+        register("login", "<username>") { args, player ->
             val username = args[0]
             player.prompt("Login", "password") { password ->
                 val err = db.loginPlayer(player, username, password)
@@ -1404,19 +1388,19 @@ class Main : Plugin() {
             }
         }
 
-        register("logout", "", "logout from your account") { args, player ->
+        register("logout") { args, player ->
             val err = db.logoutPlayer(player)
             if (err != null) {
                 player.send(err)
             } else {
-                player.send("logout.success")
+                player.kick("logout.success")
             }
         }
 
         data class RegisterSession(val name: String, val password: String)
 
         val registerSessions = mutableMapOf<Player, RegisterSession>()
-        register("register", "<username>", "register to your account") { args, player ->
+        register("register", "<username>") { args, player ->
             val name = args[0]
 
             val session = registerSessions.remove(player)
@@ -1446,11 +1430,11 @@ class Main : Plugin() {
             }
         }
 
-        register("status", "", "check your account status") { args, player ->
+        register("status") { args, player ->
             player.sendMessage(db.status(player))
         }
 
-        register("show-locale", "", "show the current locale") { args, player ->
+        register("show-locale") { args, player ->
             player.sendMessage(player.locale)
         }
     }
