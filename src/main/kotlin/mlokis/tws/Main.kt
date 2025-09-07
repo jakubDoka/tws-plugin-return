@@ -60,7 +60,8 @@ object Translations {
     }
 
     fun t(locale: String, key: String, vararg args: Pair<String, Any?>): String {
-        val template = (maps[locale] ?: (maps[DEFAULT_LOCALE] ?: error("")))[key] ?: key
+        val default = maps[DEFAULT_LOCALE] ?: error("")
+        val template = maps[locale]?.get(key) ?: default[key] ?: key
         return args.fold(template.replace("\\n", "\n")) { acc, (k, v) ->
             acc.replace("{$k}", v.toString())
         }
@@ -816,17 +817,15 @@ class Main : Plugin() {
             val feature = args[0]
 
             when (feature) {
-                "griefer" -> player.send(player.fmt("explain.griefer"))
+                "griefer" -> player.send("explain.griefer")
                 "rewind" -> player.send(
-                    player.fmt(
-                        "explain.rewind",
-                        "grace-period" to config.rewind.gracePeriodMin,
-                        "rewind-minutes" to config.rewind.maxSaves * config.rewind.saveSpacingMin
-                    )
+                    "explain.rewind",
+                    "grace-period" to config.rewind.gracePeriodMin,
+                    "rewind-minutes" to config.rewind.maxSaves * config.rewind.saveSpacingMin
                 )
 
-                "pew-pew" -> player.send(player.fmt("explain.pew-pew"))
-                "account" -> player.send(player.fmt("explain.account"))
+                "pew-pew" -> player.send("explain.pew-pew")
+                "account" -> player.send("explain.account")
                 else -> player.send("explain.unknown-feature", "feature" to feature)
             }
         }
