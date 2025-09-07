@@ -1,3 +1,5 @@
+PRAGMA foreign_keys = ON;
+
 CREATE TABLE IF NOT EXISTS user (
 	name TEXT PRIMARY KEY,
 	password_hash TEXT NOT NULL,
@@ -15,6 +17,8 @@ CREATE TABLE IF NOT EXISTS login (
 	uuid TEXT PRIMARY KEY,
 	name TEXT,
 	FOREIGN KEY(name) REFERENCES user(name)
+		ON DELETE CASCADE
+		ON UPDATE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS griefer (
@@ -24,7 +28,10 @@ CREATE TABLE IF NOT EXISTS griefer (
 
 CREATE TABLE IF NOT EXISTS failed_test_sessions (
 	name TEXT PRIMARY KEY,
-	happened_at INTEGER NOT NULL DEFAULT (unixepoch())
+	happened_at INTEGER NOT NULL DEFAULT (unixepoch()),
+	FOREIGN KEY(name) REFERENCES user(name)
+		ON DELETE CASCADE
+		ON UPDATE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS map_score (

@@ -50,6 +50,8 @@ private class Queryes(val connection: Connection) {
     val addBlockPlaced = initStmt("UPDATE user SET blocks_placed = blocks_placed + 1 WHERE name = ?")
     val addBlockBroken = initStmt("UPDATE user SET blocks_broken = blocks_broken + 1 WHERE name = ?")
     val addPlayTime = initStmt("UPDATE user SET play_time = play_time + ? WHERE name = ?")
+    val setPlayerName = initStmt("UPDATE user SET name = ? WHERE name = ?")
+    val changePassword = initStmt("UPDATE user SET password_hash = ? WHERE name = ?")
 
     // GRIEFER
     val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ?")
@@ -247,6 +249,31 @@ class DbReactor(val config: Config) {
         err("unmarked ${player.id}")
     }
 
+    fun setPlayerName(oldName: String, newName: String): String? {
+        return try {
+            qs.setPlayerName.setString(1, newName)
+            qs.setPlayerName.setString(2, oldName)
+            qs.setPlayerName.executeUpdate()
+            null
+        } catch (e: SQLException) {
+            err("error changing name")
+            e.printStackTrace()
+            "name-change.failed"
+        }
+    }
+
+    fun changePassword(name: String, oldPassword: String, newPassword: String): String? {
+        val err = validatePassword(name, oldPassword)
+        if (err != null) return err
+
+        val passwordHash = computePasswordHash(newPassword)
+        qs.changePassword.setString(1, passwordHash)
+        qs.changePassword.setString(2, name)
+        qs.changePassword.executeUpdate()
+
+        return null
+    }
+
     fun getRank(player: Player): String {
         if (isGriefer(player.info)) return Rank.GRIEFER
         qs.getRank.setString(1, player.uuid())
@@ -354,10 +381,24 @@ class DbReactor(val config: Config) {
             return "login.already-logged-in"
         }
 
+        val err = validatePassword(name, password)
+        if (err != null) return err
+
+        qs.addLogin.setString(1, player.uuid())
+        qs.addLogin.setString(2, name)
+        qs.addLogin.executeUpdate()
+
+        info("player ${name} logged in")
+        player.stateKick("login.success")
+
+        return null
+    }
+
+    fun validatePassword(name: String, password: String): String? {
         qs.getPasswordHash.setString(1, name)
         val resultSet = qs.getPasswordHash.executeQuery()
         if (!resultSet.next()) {
-            err("player ${player.name} is not registered but is trying to login")
+            err("player ${name} is not registered but is trying to login")
             return "login.register-first"
         }
 
@@ -372,13 +413,6 @@ class DbReactor(val config: Config) {
             info("player ${name} tried to login with wrong password")
             return "login.wrong-password"
         }
-
-        qs.addLogin.setString(1, player.uuid())
-        qs.addLogin.setString(2, name)
-        qs.addLogin.executeUpdate()
-
-        info("player ${name} logged in")
-        player.stateKick("login.success")
 
         return null
     }

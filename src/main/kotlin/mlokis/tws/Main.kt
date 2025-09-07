@@ -1388,44 +1388,66 @@ class Main : Plugin() {
             }
         }
 
+        register("change-name", "<name>") { args, player ->
+            val name = args[0]
+
+            val oldName = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("no-login")
+                return@register
+            }
+
+            db.setPlayerName(oldName, name)
+
+            player.stateKick("name-change")
+        }
+
+        register("change-password") { args, player ->
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("no-login")
+                return@register
+            }
+
+            player.prompt("Change Password", "old-password") { oldPassword ->
+                player.prompt("Change Password", "new-password") { newPassword ->
+                    player.prompt("Change Password", "new-password-again") { newPassword2 ->
+                        if (newPassword != newPassword2) {
+                            player.send("change-password.mismatch")
+                            return@prompt
+                        }
+
+                        val err = db.changePassword(name, oldPassword, newPassword)
+                        if (err != null) player.send(err)
+                        else player.stateKick("change-password")
+                    }
+                }
+            }
+        }
+
         register("logout") { args, player ->
             val err = db.logoutPlayer(player)
             if (err != null) {
                 player.send(err)
             } else {
-                player.kick("logout.success")
+                player.stateKick("logout.success")
             }
         }
 
-        data class RegisterSession(val name: String, val password: String)
-
-        val registerSessions = mutableMapOf<Player, RegisterSession>()
         register("register", "<username>") { args, player ->
             val name = args[0]
 
-            val session = registerSessions.remove(player)
-
-            if (session != null && session.name != name) {
-                player.send("register.name-mismatch")
-                return@register
-            }
-
             player.prompt("Register", "password") { password ->
-                if (session != null) {
-                    if (session.password != password) {
+                player.prompt("Register", "password-again") { password2 ->
+                    if (password != password2) {
                         player.send("register.password-mismatch")
                         return@prompt
                     }
 
-                    val err = db.registerPlayer(name, session.password)
+                    val err = db.registerPlayer(name, password)
                     if (err != null) {
                         player.send(err)
                     } else {
                         player.send("register.success", "name" to name)
                     }
-                } else {
-                    registerSessions[player] = RegisterSession(name, password)
-                    player.send("register.repeat")
                 }
             }
         }
