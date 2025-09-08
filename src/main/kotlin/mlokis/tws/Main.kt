@@ -364,19 +364,21 @@ class Main : Plugin() {
 
         // HUD
         arc.util.Timer.schedule({
-            mindustry.gen.Groups.player.forEach { player ->
-                val toRemove = mutableListOf<VoteSession>()
-                val text = StringBuilder()
-                for ((i, session) in voteSessions.withIndex()) {
-                    if (i > 0) text.append("\n")
-                    text.append(session.display(i, player))
+            val toRemove = mutableListOf<VoteSession>()
+            for (session in voteSessions) {
+                session.timeRemining -= 1
+                if (session.timeRemining <= 0) {
+                    toRemove.add(session)
+                }
+            }
 
-                    session.timeRemining -= 1
-                    if (session.timeRemining <= 0) {
-                        toRemove.add(session)
+            mindustry.gen.Groups.player.forEach { player ->
+                val text = buildString {
+                    for ((i, session) in voteSessions.withIndex()) {
+                        if (i > 0) append("\n")
+                        append(session.display(i, player))
                     }
                 }
-                voteSessions.removeAll(toRemove)
 
                 if (text.isEmpty()) {
                     mindustry.gen.Call.hideHudText(player.con)
@@ -384,6 +386,8 @@ class Main : Plugin() {
                     mindustry.gen.Call.setHudText(player.con, text.toString())
                 }
             }
+
+            voteSessions.removeAll(toRemove)
         }, 0f, 1f)
 
         // AFK/PERMS tracking
@@ -1301,19 +1305,19 @@ class Main : Plugin() {
             val vote = args[0]
 
             if (voteSessions.isEmpty()) {
-                player.send("votekick.no-sessions")
+                player.send("vote.no-sessions")
                 return@register
             }
 
             var index = 1
             if (voteSessions.size > 1) {
                 if (args.size < 2) {
-                    player.send("votekick.expected-id")
+                    player.send("vote.expected-id")
                     return@register
                 }
 
                 index = min(max(args[1].replace("#", "").toIntOrNull() ?: run {
-                    player.send("votekick.expected-id")
+                    player.send("vote.expected-id")
                     return@register
                 }, 1), voteSessions.size)
             }
@@ -1396,9 +1400,9 @@ class Main : Plugin() {
                 return@register
             }
 
-            db.setPlayerName(oldName, name)
-
-            player.stateKick("name-change")
+            val err = db.setPlayerName(oldName, name)
+            if (err != null) player.send(err)
+            else player.stateKick("name-change")
         }
 
         register("change-password") { args, player ->

@@ -258,7 +258,7 @@ class DbReactor(val config: Config) {
         } catch (e: SQLException) {
             err("error changing name")
             e.printStackTrace()
-            "name-change.failed"
+            "change-name.failed"
         }
     }
 
