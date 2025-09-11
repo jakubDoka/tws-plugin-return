@@ -16,9 +16,10 @@ import mindustry.gen.Unit
 import mindustry.gen.Groups
 import mindustry.type.Item
 import mindustry.type.UnitType
+import mindustry.world.blocks.defense.turrets.ItemTurret
+import mindustry.world.blocks.defense.turrets.Turret
 import java.lang.Exception
 import java.util.*
-
 
 class PewPew {
     val state = HashMap<Unit, State>()
@@ -26,9 +27,6 @@ class PewPew {
     val weaponSets = HashMap<UnitType, HashMap<Item, Weapon>>()
 
     init {
-        arc.Events.run(EventType.Trigger.update) {
-            update()
-        }
 
         arc.Events.on(EventType.UnitDestroyEvent::class.java) {
             val state = state.remove(it.unit)
@@ -47,7 +45,7 @@ class PewPew {
         }
     }
 
-    private fun update() {
+    fun update() {
         for (u in Groups.unit) {
             val unit = u ?: continue
             if (!unit.hasItem()) continue
@@ -57,6 +55,23 @@ class PewPew {
             state.reload += Time.delta / 60f
             if (unit.isShooting) {
                 weapon.shoot(unit, state)
+            }
+        }
+
+        for (t in Groups.build) {
+            val turret = t ?: continue
+            if (turret !is ItemTurret.ItemTurretBuild) continue
+            if (turret.isShooting && turret.reloadCounter == 0f) {
+                Call.createBullet(
+                    turret.peekAmmo() ?: continue,
+                    turret.team,
+                    turret.x,
+                    turret.y,
+                    turret.rotation,
+                    1f,
+                    1f,
+                    1f
+                )
             }
         }
     }

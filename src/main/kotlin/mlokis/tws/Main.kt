@@ -2,6 +2,7 @@
 
 package mlokis.tws
 
+import java.nio.file.*
 import kotlin.reflect.full.*
 import arc.util.CommandHandler
 import arc.util.Log
@@ -21,9 +22,7 @@ import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.net.Administration
 import mindustry.net.WorldReloader
-import mindustry.world.Block
 import mindustry.world.Tile
-import mindustry.world.modules.ItemModule
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
@@ -135,6 +134,7 @@ fun Long.displayTime(): String {
 class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
+    val pets = Pets()
     val db = DbReactor(config)
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
@@ -161,6 +161,29 @@ class Main : Plugin() {
             .setActivity(Activity.playing("${discordCommands.prefix}help"))
             .build()
             .awaitReady()
+    }
+
+    // AFK/PERMS tracking
+    val minAfkPeriod = 1000 * 60 * 2
+    val afkMarker = "[red](afk)[]"
+    val playerActivityByUuid = mutableMapOf<String, PlayerActivityTracker>()
+
+    inner class PlayerActivityTracker {
+        var lastActive = System.currentTimeMillis()
+
+        val isAfk: Boolean
+            get() = System.currentTimeMillis() - lastActive > minAfkPeriod
+
+        fun onAction(player: Player) {
+            lastActive = System.currentTimeMillis()
+            player.name = player.name.replace(afkMarker, "")
+        }
+
+        fun forceAfk(player: Player) {
+            if (isAfk) return
+            lastActive = System.currentTimeMillis() - (minAfkPeriod + 1)
+            player.name += afkMarker
+        }
     }
 
     init {
@@ -249,6 +272,7 @@ class Main : Plugin() {
 
     fun applyConfig() {
         pewPew.reload(config.pewPew)
+        pets.reload(config, db)
 
         rewindSaverTask?.cancel()
         rewindSaverTask = arc.util.Timer.schedule({
@@ -314,6 +338,26 @@ class Main : Plugin() {
     }
 
     override fun init() {
+        var debounceTask: arc.util.Timer.Task? = null
+        Config.hotReload {
+            debounceTask?.cancel()
+            debounceTask = arc.util.Timer.schedule({
+                try {
+                    info("auto reloading config")
+                    config = Config.load()
+                    applyConfig()
+                } catch (e: Exception) {
+                    err("Error reloading config: ${e.message}")
+                    e.printStackTrace()
+                }
+            }, 0.1f)
+        }
+
+        arc.Events.run(EventType.Trigger.update) {
+            pewPew.update()
+            pets.update()
+        }
+
         Log.useColors = false
         Log.logger = object : Log.LogHandler {
             val prevLogger = Log.logger
@@ -390,21 +434,6 @@ class Main : Plugin() {
             voteSessions.removeAll(toRemove)
         }, 0f, 1f)
 
-        // AFK/PERMS tracking
-        val minAfkPeriod = 1000 * 60 * 2
-        val afkMarker = "[red](afk)[]"
-
-        class PlayerActivityTracker {
-            var lastActive = System.currentTimeMillis()
-
-            val isAfk: Boolean
-                get() = System.currentTimeMillis() - lastActive > minAfkPeriod
-
-            fun onAction(player: Player) {
-                lastActive = System.currentTimeMillis()
-                player.name = player.name.replace(afkMarker, "")
-            }
-        }
 
         class TilePermission(var protectionRank: BlockProtectionRank, var issuer: PlayerActivityTracker)
 
@@ -414,7 +443,6 @@ class Main : Plugin() {
         }
 
         val defaultPermission = TilePermission(BlockProtectionRank.Guest, PlayerActivityTracker())
-        val playerActivityByUuid = mutableMapOf<String, PlayerActivityTracker>()
         val permissionTable = mutableMapOf<Tile, TilePermission>()
         val interactions = mutableMapOf<Tile, Interaction>()
 
@@ -573,6 +601,7 @@ class Main : Plugin() {
                 greetNewUser(event.player)
             } else {
                 event.player.send("hello.user", "name" to event.player.plainName())
+                pets.populate(event.player, config.getRank(event.player, db.getRank(event.player)))
             }
         }
 
@@ -622,6 +651,7 @@ class Main : Plugin() {
                 session.yea.remove(event.player)
             }
             doubleTaps.remove(event.player.uuid())
+            pets.remove(event.player)
         }
     }
 
@@ -796,6 +826,12 @@ class Main : Plugin() {
 
         fun register(name: String, callbalck: (Array<String>, Player) -> Unit) {
             register(name, "", callbalck)
+        }
+
+        register("appear-afk") { args, player ->
+            playerActivityByUuid
+                .getOrPut(player.uuid()) { PlayerActivityTracker() }
+                .forceAfk(player)
         }
 
         register("player-stats", "[name]") { args, player ->
@@ -1495,6 +1531,7 @@ data class Rank(
     val voteWeight: Int,
     val messageTimeout: Long,
     val visible: Boolean,
+    val pets: List<String> = listOf(),
 ) {
     companion object {
         const val GUEST = "guest"
@@ -1516,11 +1553,12 @@ enum class BlockProtectionRank {
 
 @Serializable
 data class Config(
-    val ranks: HashMap<String, Rank>,
+    val ranks: Map<String, Rank>,
     val test: TestConfig,
     val discord: DiscordConfig,
     val pewPew: PewPewConfig,
     val rewind: RewindConfig,
+    val pets: Map<String, Pets.Stats>,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -1533,13 +1571,14 @@ data class Config(
         const val PATH = "config/tws/"
 
         val default = Config(
-            hashMapOf(
+            mapOf(
                 Rank.GRIEFER to Rank(
                     color = "pink",
                     blockProtectionRank = BlockProtectionRank.Griefer,
                     voteWeight = 0,
                     visible = true,
                     messageTimeout = 1000 * 10,
+                    pets = listOf(),
                 ),
                 Rank.GUEST to Rank(
                     color = "",
@@ -1547,6 +1586,7 @@ data class Config(
                     voteWeight = 1,
                     visible = true,
                     messageTimeout = 1000 * 2,
+                    pets = listOf(),
                 ),
                 Rank.NEWCOMER to Rank(
                     color = "",
@@ -1554,6 +1594,7 @@ data class Config(
                     voteWeight = 1,
                     visible = false,
                     messageTimeout = 1000 * 1,
+                    pets = listOf(),
                 ),
                 Rank.VERIFIED to Rank(
                     color = "",
@@ -1561,6 +1602,7 @@ data class Config(
                     voteWeight = 1,
                     visible = false,
                     messageTimeout = 800,
+                    pets = listOf(),
                 ),
                 "dev" to Rank(
                     color = "purple",
@@ -1568,6 +1610,7 @@ data class Config(
                     voteWeight = 1,
                     visible = true,
                     messageTimeout = 0,
+                    pets = listOf("dev-pet", "dev-pet"),
                 ),
                 "owner" to Rank(
                     color = "gold",
@@ -1575,6 +1618,7 @@ data class Config(
                     voteWeight = 1,
                     visible = true,
                     messageTimeout = 0,
+                    pets = listOf(),
                 ),
             ),
             TestConfig(
@@ -1620,8 +1664,45 @@ data class Config(
                 gracePeriodMin = 5,
                 maxSaves = 15,
                 saveSpacingMin = 1,
-            )
+            ),
+            hashMapOf(
+                "dev-pet" to Pets.Stats(
+                    acceleration = 1f,
+                    maxSpeed = 1000f,
+                    minSpeed = 0f,
+                    friction = 1f,
+                    mating = 1f,
+                    attachment = 100f,
+                    effectName = "fire",
+                )
+            ),
         )
+
+        fun hotReload(apply: () -> Unit) {
+            val path = Paths.get(PATH)
+            val watchService = FileSystems.getDefault().newWatchService()
+
+            path.register(
+                watchService,
+                StandardWatchEventKinds.ENTRY_MODIFY
+            )
+
+
+            Thread {
+                while (true) {
+                    val key = watchService.take()
+                    for (event in key.pollEvents()) {
+                        val kind = event.kind()
+                        val fileName = event.context() as Path
+                        apply()
+                    }
+                    val valid = key.reset()
+                    if (!valid) break
+                }
+
+                err("Stopped hot reloading")
+            }.start()
+        }
 
         fun load(): Config {
             java.io.File(PATH).mkdirs()
