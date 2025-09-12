@@ -82,14 +82,27 @@ class PewPew {
         val damageMultiplier: Float,
         val speedMultiplier: Float,
         val lifetimeMultiplier: Float,
-        val burstSpacing: Float,
         val reload: Float,
-        val bulletsPerShot: Int,
+        val burstSpacing: Float,
+        val burstCount: Int,
+        val bulletsPerBurst: Int,
         val ammoMultiplier: Int,
-        val itemsPerScoop: Int,
+        val itemsPerAmmo: Int,
     ) {
         companion object {
-            val DEFAULT = Stats("gamma-1", 2f, 1f, .3f, 1f, 1f, 0f, 2, 4, 1)
+            val DEFAULT = Stats(
+                bullet = "gamma-1",
+                inaccuracy = 2f,
+                damageMultiplier = 1f,
+                speedMultiplier = .3f,
+                lifetimeMultiplier = 1f,
+                burstSpacing = 0.05f,
+                reload = 1f,
+                bulletsPerBurst = 2,
+                burstCount = 1,
+                ammoMultiplier = 4,
+                itemsPerAmmo = 1,
+            )
         }
     }
 
@@ -132,7 +145,7 @@ class PewPew {
             if (state.inBurst > 0) {
                 state.inBurst--
             } else {
-                state.inBurst = stats.bulletsPerShot
+                state.inBurst = stats.burstCount
             }
 
             state.reload = 0f
@@ -140,10 +153,10 @@ class PewPew {
             // refilling ammo
             if (state.ammo == 0) {
                 // not enough items to get new ammo
-                if (unit.stack.amount < stats.itemsPerScoop) {
+                if (unit.stack.amount < stats.itemsPerAmmo) {
                     return
                 }
-                unit.stack.amount -= stats.itemsPerScoop
+                unit.stack.amount -= stats.itemsPerAmmo
                 state.ammo += stats.ammoMultiplier
             }
             state.ammo--
@@ -165,7 +178,8 @@ class PewPew {
                 // h2 is already in state of vector from u.pos to u.aim and we only care about length
                 life *= (h2.len() / bullet.range).coerceAtMost(1f) // bullet is controlled by cursor
             }
-            for (i in 0..<if (stats.burstSpacing == 0f) stats.bulletsPerShot else 1) {
+
+            for (i in 0..<stats.bulletsPerBurst) {
                 Call.createBullet(
                     bullet,
                     team,
