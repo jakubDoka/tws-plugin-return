@@ -11,11 +11,11 @@ import mindustry.entities.Effect
 import mindustry.game.EventType
 import mindustry.gen.Call
 import mindustry.gen.Player
+import kotlin.math.max
 
 class Pets {
     val dif = Vec2()
     val vel = Vec2()
-    val playerPos = Vec2()
     var config = mapOf<String, Pets.Stats>()
 
     val instances = mutableMapOf<Player, MutableList<Pet>>()
@@ -41,34 +41,33 @@ class Pets {
     fun update() {
         for ((player, pets) in instances) {
             for (p in pets) {
-                if (!p.materialized) {
-                    if (player.unit() != null) {
-                        p.pos.set(player.unit().x, player.unit().y)
-                        p.vel.setLength(p.stats.attachment)
-                        p.vel.setAngle(Mathf.random() * 360f)
-                        p.materialized = true
-                    } else {
-                        continue
-                    }
-                }
-
                 val unit = player.unit() ?: run {
                     p.materialized = false
                     continue
                 }
 
+                if (!p.materialized) {
+                    p.pos.set(unit.x, unit.y)
+                    p.vel.setLength(p.stats.attachment)
+                    p.vel.setAngle(Mathf.random() * 360f)
+                    p.materialized = true
+                }
+
+
                 val delta = Time.delta / 60f
 
                 for (o in pets) {
                     if (p == o) continue
-                    p.vel.add(dif.set(o.pos).sub(p.pos).scl(p.stats.mating * delta))
+                    var dragg = (p.pos.dst(o.pos) - p.stats.mating)
+                    p.vel.add(dif.set(o.pos).sub(p.pos).nor().scl(dragg * delta * p.stats.acceleration))
                 }
 
                 val velLen = p.vel.len()
 
                 dif.set(unit.x, unit.y).sub(p.pos)
 
-                p.vel.add(dif.setLength(p.stats.attachment * delta))
+                var dragg = (dif.len() - p.stats.attachment)
+                p.vel.add(dif.nor().scl(dragg * delta * p.stats.acceleration))
 
                 if (p.stats.maxSpeed != p.stats.minSpeed) {
                     p.vel.scl(Mathf.clamp(velLen, p.stats.minSpeed, p.stats.maxSpeed) / velLen)

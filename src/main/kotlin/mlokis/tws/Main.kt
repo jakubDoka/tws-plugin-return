@@ -374,7 +374,11 @@ class Main : Plugin() {
                 prevLogger.log(level, message)
 
                 if (adminChannel != null) {
-                    logList.add("[$level] $message")
+                    var message = "[$level] $message"
+                    while (message.isNotEmpty()) {
+                        logList.add(message.take(maxMessageLength))
+                        message = message.drop(maxMessageLength)
+                    }
                     debounceFlush(adminChannel)
                 }
             }
@@ -1667,7 +1671,7 @@ data class Config(
             ),
             hashMapOf(
                 "dev-pet" to Pets.Stats(
-                    acceleration = 1f,
+                    acceleration = 100f,
                     maxSpeed = 1000f,
                     minSpeed = 0f,
                     friction = 1f,
