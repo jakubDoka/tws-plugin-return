@@ -9,6 +9,7 @@ import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import mindustry.Vars
@@ -22,6 +23,8 @@ import mindustry.gen.Player
 import mindustry.mod.Plugin
 import mindustry.net.Administration
 import mindustry.net.WorldReloader
+import mindustry.type.Item
+import mindustry.type.ItemStack
 import mindustry.world.Tile
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
@@ -273,6 +276,7 @@ class Main : Plugin() {
     fun applyConfig() {
         pewPew.reload(config.pewPew)
         pets.reload(config, db)
+        config.buildCore.init()
 
         rewindSaverTask?.cancel()
         rewindSaverTask = arc.util.Timer.schedule({
@@ -917,28 +921,34 @@ class Main : Plugin() {
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
-        val buildCoreBlock = mapOf(
-            Blocks.vault to Blocks.coreShard,
-            Blocks.reinforcedVault to Blocks.coreBastion,
-        )
 
         register("build-core") { args, player ->
+            val buildCoreBlock = mapOf(
+                Blocks.vault to (Blocks.coreShard to config.buildCore.serpuloScalingMap),
+                Blocks.reinforcedVault to (Blocks.coreBastion to config.buildCore.erekirScalingMap),
+            )
+
             var tile = Vars.world.tile(player.tileX(), player.tileY())
             val core = Vars.state.teams[Team.sharded]?.core() ?: run {
                 player.send("build-core.no-core")
                 return@register
             }
 
-            val toBuild = buildCoreBlock[tile.build?.block] ?: run {
+            val (toBuild, requirements) = buildCoreBlock[tile.build?.block] ?: run {
                 player.send("build-core.wrong-block", "expected" to buildCoreBlock.keys.joinToString(" or "))
                 return@register
             };
 
+            val totalCapacity = core.storageCapacity
+            val itemstack = mutableListOf<ItemStack>()
+            for (req in requirements) {
+                itemstack.add(ItemStack(req.key, (req.value * totalCapacity).toInt()))
+            }
 
-            if (!core.items.has(toBuild.requirements)) {
+            if (!core.items.has(itemstack)) {
                 val sb = StringBuilder()
                 var first = true
-                for (req in Blocks.coreShard.requirements) {
+                for (req in itemstack) {
                     if (!first) sb.append(", ")
                     first = false
                     sb.append(Util.itemIcons[req.item.name])
@@ -959,20 +969,12 @@ class Main : Plugin() {
                 )
 
                 override fun onPass() {
-                    val toBuild = buildCoreBlock[tile.build?.block] ?: run {
-                        sendToAll(
-                            "build-core.failed.wrong-block",
-                            "expected" to buildCoreBlock.keys.joinToString(" or ")
-                        )
-                        return
-                    };
-
-                    if (!core.items.has(toBuild.requirements)) {
+                    if (!core.items.has(itemstack)) {
                         sendToAll("build-core.failed.missing-resources")
                         return
                     }
 
-                    core.items.remove(toBuild.requirements)
+                    core.items.remove(itemstack)
 
                     mindustry.gen.Call.constructFinish(
                         tile.build.tile,
@@ -1556,6 +1558,22 @@ enum class BlockProtectionRank {
 }
 
 @Serializable
+data class BuildCoreConfig(val serpuloScaling: Map<String, Float>, val erekirScaling: Map<String, Float>) {
+    @Transient
+    lateinit var serpuloScalingMap: Map<Item, Float>
+
+    @Transient
+    lateinit var erekirScalingMap: Map<Item, Float>
+
+    fun init() {
+        erekirScalingMap =
+            erekirScaling.map { (k, v) -> (Util.item(k) ?: error("erekir item $k not found")) to v.toFloat() }.toMap()
+        serpuloScalingMap =
+            serpuloScaling.map { (k, v) -> (Util.item(k) ?: error("serpulo item $k not found")) to v.toFloat() }.toMap()
+    }
+}
+
+@Serializable
 data class Config(
     val ranks: Map<String, Rank>,
     val test: TestConfig,
@@ -1563,6 +1581,7 @@ data class Config(
     val pewPew: PewPewConfig,
     val rewind: RewindConfig,
     val pets: Map<String, Pets.Stats>,
+    val buildCore: BuildCoreConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -1679,6 +1698,14 @@ data class Config(
                     attachment = 100f,
                     effectName = "fire",
                 )
+            ),
+            BuildCoreConfig(
+                serpuloScaling = mapOf(
+                    "copper" to 0.01f,
+                ),
+                erekirScaling = mapOf(
+                    "graphite" to 0.01f,
+                ),
             ),
         )
 
