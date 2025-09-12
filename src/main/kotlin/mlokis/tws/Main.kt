@@ -135,7 +135,7 @@ class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
     val pets = Pets()
-    val db = DbReactor(config)
+    val db = DbReactor()
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
     var gameStartTime = 0L
@@ -599,7 +599,7 @@ class Main : Plugin() {
         }, 0f, 60f)
 
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
-            val err = db.loadPlayer(event.player)
+            val err = db.loadPlayer(event.player, config)
             if (err != null) {
                 event.player.send(err)
                 greetNewUser(event.player)

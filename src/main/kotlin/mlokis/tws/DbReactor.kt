@@ -86,7 +86,7 @@ private class Queryes(val connection: Connection) {
 data class MapScore(val maxWave: Int, val shortestPlaytime: Long, val longestPlaytime: Long)
 data class PlayerScore(val blocksBroken: Int, val blocksPlaced: Int, val playTime: Long)
 
-class DbReactor(val config: Config) {
+class DbReactor {
     private val qs: Queryes
     private val connection: Connection
     private val hasher: Argon2 = Argon2Factory.create()
@@ -344,7 +344,7 @@ class DbReactor(val config: Config) {
             }
     }
 
-    fun loadPlayer(player: Player): String? {
+    fun loadPlayer(player: Player, config: Config): String? {
         if (isGriefer(player.info)) {
             val griferRank = config.getRank(player, Rank.GRIEFER) ?: return BUG_MSG
             player.name = "${player.name}[${griferRank.color}]<griefer>[]"

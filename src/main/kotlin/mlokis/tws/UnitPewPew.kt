@@ -27,7 +27,6 @@ class PewPew {
     val weaponSets = HashMap<UnitType, HashMap<Item, Weapon>>()
 
     init {
-
         arc.Events.on(EventType.UnitDestroyEvent::class.java) {
             val state = state.remove(it.unit)
             if (state != null) {
@@ -53,7 +52,7 @@ class PewPew {
             val weapon = set[unit.stack.item] ?: continue
             val state = state.computeIfAbsent(unit) { pool.pop { State() } }
             state.reload += Time.delta / 60f
-            if (unit.isShooting) {
+            if (unit.isShooting || state.inBurst > 0) {
                 weapon.shoot(unit, state)
             }
         }
@@ -122,9 +121,20 @@ class PewPew {
         }
 
         fun shoot(unit: Unit, state: State) {
-            if (state.reload < stats.reload) {
+            if (state.inBurst == 0 && state.reload < stats.reload) {
                 return
             }
+
+            if (state.inBurst > 0 && state.reload < stats.burstSpacing) {
+                return
+            }
+
+            if (state.inBurst > 0) {
+                state.inBurst--
+            } else {
+                state.inBurst = stats.bulletsPerShot
+            }
+
             state.reload = 0f
 
             // refilling ammo
@@ -155,7 +165,7 @@ class PewPew {
                 // h2 is already in state of vector from u.pos to u.aim and we only care about length
                 life *= (h2.len() / bullet.range).coerceAtMost(1f) // bullet is controlled by cursor
             }
-            for (i in 0..<stats.bulletsPerShot) {
+            for (i in 0..<if (stats.burstSpacing == 0f) stats.bulletsPerShot else 1) {
                 Call.createBullet(
                     bullet,
                     team,
@@ -181,6 +191,7 @@ class PewPew {
     class State {
         var ammo = 0
         var reload = 0f
+        var inBurst = 0
 
         fun reset() {
             ammo = 0
