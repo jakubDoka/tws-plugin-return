@@ -2,12 +2,14 @@
 
 package mlokis.tws
 
+import arc.math.Mathf
 import java.nio.file.*
 import kotlin.reflect.full.*
 import arc.util.CommandHandler
 import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
+import arc.util.Tmp
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
@@ -20,12 +22,14 @@ import mindustry.game.Team
 import mindustry.gen.Call
 import mindustry.gen.Groups
 import mindustry.gen.Player
+import mindustry.io.MapIO
 import mindustry.mod.Plugin
 import mindustry.net.Administration
 import mindustry.net.WorldReloader
 import mindustry.type.Item
 import mindustry.type.ItemStack
 import mindustry.world.Tile
+import mindustry.world.blocks.environment.OreBlock
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
@@ -33,6 +37,9 @@ import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
+import net.dv8tion.jda.api.utils.FileUpload
+import net.dv8tion.jda.api.utils.messages.MessageCreateBuilder
+import net.dv8tion.jda.api.utils.messages.MessageCreateData
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.absoluteValue
@@ -40,6 +47,12 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
+import java.awt.Color
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
+import javax.imageio.ImageIO
 
 object Translations {
     const val DEFAULT_LOCALE = "en_US"
@@ -342,6 +355,19 @@ class Main : Plugin() {
     }
 
     override fun init() {
+        try {
+            val image = ImageIO.read(object {}.javaClass.getResourceAsStream("/block_colors.png"))
+
+            for (block in Vars.content.blocks()) {
+                block.mapColor.argb8888(image.getRGB(block.id.toInt(), 0));
+                if (block is OreBlock) {
+                    block.mapColor.set(block.itemDrop.color);
+                }
+            }
+        } catch (e: Exception) {
+            throw RuntimeException(e);
+        }
+
         var debounceTask: arc.util.Timer.Task? = null
         Config.hotReload {
             debounceTask?.cancel()
@@ -682,19 +708,73 @@ class Main : Plugin() {
         }
 
         handler.register("game-status", "check the status of the game") { args, event: MessageReceivedEvent ->
+            fun colorFor(tile: Tile): arc.graphics.Color {
+                val world = Vars.world;
+
+                val real = tile.block();
+                var bc = real.minimapColor(tile);
+                if (bc == 0 && tile.block() == Blocks.air && tile.overlay() == Blocks.air) bc =
+                    tile.floor().minimapColor(tile);
+
+                val color =
+                    Tmp.c1.set(if (bc == 0) MapIO.colorFor(real, tile.floor(), tile.overlay(), tile.team()) else bc);
+                color.mul(1f - Mathf.clamp(world.getDarkness(tile.x.toInt(), tile.y.toInt()) / 4f));
+
+                if (real == Blocks.air && tile.y < world.height() - 1 &&
+                    world.tile(tile.x.toInt(), tile.y.toInt() + 1).solid()
+                ) {
+                    color.mul(0.7f);
+                } else if (tile.floor().isLiquid && (tile.y >= world.height() - 1 ||
+                            !world.tile(tile.x.toInt(), tile.y.toInt() + 1).floor().isLiquid)
+                ) {
+                    color.mul(0.84f, 0.84f, 0.9f, 1f);
+                }
+
+                return color;
+            }
+
+            fun colorFor2(tile: Tile): Int = MapIO.colorFor(tile.block(), tile.floor(), tile.overlay(), tile.team())
+
+            fun makeMinimapImage(): BufferedImage {
+                val width = Vars.world.width()
+                val height = Vars.world.height()
+
+                // Create a buffered image (RGB)
+                val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
+
+                // Fill it pixel by pixel
+                for (x in 0..<width) {
+                    for (y in 0..<height) {
+                        val color = colorFor2(Vars.world.tile(x, y));
+                        image.setRGB(x, y, color.rotateRight(8))
+                    }
+                }
+
+                return image
+            }
+
+            val baos = ByteArrayOutputStream()
+            ImageIO.write(makeMinimapImage(), "png", baos)
+            val data = baos.toByteArray()
+
             event.channel.sendMessage(
-                "" +
-                        "playing: **${Vars.state.rules.mode().name}**\n" +
-                        "map: **${Vars.state.map.name()}**\n" +
-                        "players: **${Groups.player.size()}**\n" +
-                        "time: **${
-                            (System.currentTimeMillis() - gameStartTime)
-                                .displayTime()
-                        }**\n" +
-                        if (Vars.state.rules.mode() == Gamemode.survival)
-                            "wave: **${Vars.state.wave}**\n"
-                        else
-                            ""
+                MessageCreateBuilder()
+                    .setContent(
+                        "" +
+                                "playing: **${Vars.state.rules.mode().name}**\n" +
+                                "map: **${Vars.state.map.name()}**\n" +
+                                "players: **${Groups.player.size()}**\n" +
+                                "time: **${
+                                    (System.currentTimeMillis() - gameStartTime)
+                                        .displayTime()
+                                }**\n" +
+                                if (Vars.state.rules.mode() == Gamemode.survival)
+                                    "wave: **${Vars.state.wave}**\n"
+                                else
+                                    ""
+                    )
+                    .setFiles(FileUpload.fromData(data, "current-map.png"))
+                    .build()
             ).queue()
         }
     }
@@ -918,6 +998,41 @@ class Main : Plugin() {
                     }, 5f)
                 }
             })
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
+        }
+
+
+
+        register("delete-core") { args, player ->
+            val cores = setOf(
+                Blocks.coreShard,
+                Blocks.coreBastion,
+                Blocks.coreNucleus,
+                Blocks.coreCitadel,
+                Blocks.coreAcropolis,
+                Blocks.coreFoundation,
+            )
+
+            var tile = Vars.world.tile(player.tileX(), player.tileY())
+
+            if (tile.build?.block !in cores) {
+                player.send("what you are hovering over is not a core, allowed blocks are $cores")
+            }
+
+            voteSessions.add(object : VoteSession(player) {
+                override val translationKey = "delete-core"
+
+                override fun onDisplay(player: Player): String = player.fmt("delet the core at ${tile.x}:${tile.y}")
+
+                override fun onPass() {
+                    if (tile.build?.block !in cores) {
+                        sendToAll("core deletion failed, core is no longer there")
+                    }
+
+                    Call.deconstructFinish(tile, tile.build?.block, null)
+                }
+            });
+
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
