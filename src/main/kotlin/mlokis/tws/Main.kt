@@ -689,6 +689,7 @@ class Main : Plugin() {
         }
     }
 
+
     fun greetNewUser(player: Player) {
         displayDiscordInvite(player)
         Call.infoPopup(player.con, player.fmt("intro"), 10f, arc.util.Align.topRight, 160, 0, 0, 10)
@@ -708,53 +709,21 @@ class Main : Plugin() {
         }
 
         handler.register("game-status", "check the status of the game") { args, event: MessageReceivedEvent ->
-            fun colorFor(tile: Tile): arc.graphics.Color {
-                val world = Vars.world;
+            val width = Vars.world.width()
+            val height = Vars.world.height()
 
-                val real = tile.block();
-                var bc = real.minimapColor(tile);
-                if (bc == 0 && tile.block() == Blocks.air && tile.overlay() == Blocks.air) bc =
-                    tile.floor().minimapColor(tile);
+            val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
 
-                val color =
-                    Tmp.c1.set(if (bc == 0) MapIO.colorFor(real, tile.floor(), tile.overlay(), tile.team()) else bc);
-                color.mul(1f - Mathf.clamp(world.getDarkness(tile.x.toInt(), tile.y.toInt()) / 4f));
-
-                if (real == Blocks.air && tile.y < world.height() - 1 &&
-                    world.tile(tile.x.toInt(), tile.y.toInt() + 1).solid()
-                ) {
-                    color.mul(0.7f);
-                } else if (tile.floor().isLiquid && (tile.y >= world.height() - 1 ||
-                            !world.tile(tile.x.toInt(), tile.y.toInt() + 1).floor().isLiquid)
-                ) {
-                    color.mul(0.84f, 0.84f, 0.9f, 1f);
+            for (x in 0..<width) {
+                for (y in 0..<height) {
+                    val tile = Vars.world.tile(x, y);
+                    val color = MapIO.colorFor(tile.block(), tile.floor(), tile.overlay(), tile.team())
+                    image.setRGB(x, width - y - 1, color.rotateRight(8))
                 }
-
-                return color;
-            }
-
-            fun colorFor2(tile: Tile): Int = MapIO.colorFor(tile.block(), tile.floor(), tile.overlay(), tile.team())
-
-            fun makeMinimapImage(): BufferedImage {
-                val width = Vars.world.width()
-                val height = Vars.world.height()
-
-                // Create a buffered image (RGB)
-                val image = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
-
-                // Fill it pixel by pixel
-                for (x in 0..<width) {
-                    for (y in 0..<height) {
-                        val color = colorFor2(Vars.world.tile(x, y));
-                        image.setRGB(x, y, color.rotateRight(8))
-                    }
-                }
-
-                return image
             }
 
             val baos = ByteArrayOutputStream()
-            ImageIO.write(makeMinimapImage(), "png", baos)
+            ImageIO.write(image, "png", baos)
             val data = baos.toByteArray()
 
             event.channel.sendMessage(
@@ -1682,9 +1651,11 @@ data class BuildCoreConfig(val serpuloScaling: Map<String, Float>, val erekirSca
 
     fun init() {
         erekirScalingMap =
-            erekirScaling.map { (k, v) -> (Util.item(k) ?: error("erekir item $k not found")) to v.toFloat() }.toMap()
+            erekirScaling.map { (k, v) -> (Util.item(k) ?: error("erekir item $k not found")) to v.toFloat() }
+                .toMap()
         serpuloScalingMap =
-            serpuloScaling.map { (k, v) -> (Util.item(k) ?: error("serpulo item $k not found")) to v.toFloat() }.toMap()
+            serpuloScaling.map { (k, v) -> (Util.item(k) ?: error("serpulo item $k not found")) to v.toFloat() }
+                .toMap()
     }
 }
 
