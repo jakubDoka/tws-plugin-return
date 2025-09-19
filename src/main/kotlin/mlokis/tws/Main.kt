@@ -95,6 +95,8 @@ fun sendToAll(message: String, vararg args: Pair<String, Any>) {
     }
 }
 
+fun Boolean.isIsNot(): String = if (this) "is" else "is not"
+
 fun Player.markKick(reason: String) = kick(
     fmt("mark-kick", "reason" to reason), 0
 )
@@ -742,6 +744,17 @@ class Main : Plugin() {
                 }
             }
         }
+
+        arc.Events.on(EventType.PlayerBanEvent::class.java) { event ->
+            db.markGriefer(event.player.info, "admin ID ban")
+        }
+
+        arc.Events.on(EventType.PlayerIpBanEvent::class.java) { event ->
+            val player = Groups.player.find { it.con.address == event.ip }
+            if (player != null) {
+                db.markGriefer(player.info, "admin ip ban")
+            }
+        }
     }
 
 
@@ -946,38 +959,37 @@ class Main : Plugin() {
                 return@register
             }
 
-            val currentRank = db.getRank(player)
-            val rankData = config.getRank(player, currentRank) ?: return@register
+            val currentRank = config.getRank(player, db.getRank(player)) ?: return@register
 
-            if (rankData.blockProtectionRank != BlockProtectionRank.Member) {
-                player.send("you are not verified, you can't equip a rank, use /tws-test-start to verify")
+            if (currentRank.blockProtectionRank != BlockProtectionRank.Member) {
+                player.send("equip-rank.not-verified")
             }
 
             val rankName = args[0]
 
             val rank = config.getRank(player, rankName) ?: run {
-                player.send("rank does not exist")
+                player.send("rank-info.not-found")
                 return@register
             }
 
             if (rank.blockProtectionRank != BlockProtectionRank.Member && !player.admin) {
-                player.send("rank is not equipable")
+                player.send("rank-info.not-equipable")
                 return@register
             }
 
             val playerStats = db.getPlayerScore(name) ?: run {
                 err("player ${player.name} has no stats")
-                player.send("BUG: player ${player.name} has no stats")
+                player.send("bug.msg")
                 return@register
             }
 
             if (rank.quest == null && rank.adminOnly && !player.admin) {
-                player.send("rank is equipable only by admins")
+                player.send("equip-rank.admin-only")
                 return@register
             }
 
             if (rank.quest != null && !rank.quest.isObtained(playerStats)) {
-                player.send("rank is not obtained, see /rank-info ${rankName}")
+                player.send("rank-info.not-obtained", "name" to rankName)
                 return@register
             }
 
@@ -1009,7 +1021,7 @@ class Main : Plugin() {
             val rankName = args[0]
 
             val rank = config.ranks[rankName] ?: run {
-                player.send("rank does not exist")
+                player.send("rank-info.not-found")
                 return@register
             }
 
@@ -1017,17 +1029,19 @@ class Main : Plugin() {
             val playerStats = if (name != null) db.getPlayerScore(name) else null
 
             player.send(
-                "[orange]-- ${rank.display(rankName)} --[]\n" +
-                        "block-protection-rank: ${rank.blockProtectionRank}\n" +
-                        "message-timeout: ${rank.messageTimeout.displayTime()}\n" +
-                        "vote-weight: ${rank.voteWeight}\n" +
-                        "visible: ${rank.visible}\n" +
-                        "pets: ${if (rank.pets.isEmpty()) "none" else rank.pets.joinToString(", ")}\n" +
-                        "quest: ${
-                            if (rank.quest != null) if (playerStats != null)
-                                rank.quest.displayReference(player, "requirements", playerStats)
-                            else rank.quest.display(player, "requirements") else "not obtainable"
-                        }\n"
+                "rank-info.table",
+                "name" to rank.display(rankName),
+                "block-protection-rank" to rank.blockProtectionRank,
+                "message-timeout" to rank.messageTimeout.displayTime(),
+                "vote-weight" to rank.voteWeight,
+                "visible" to rank.visible.isIsNot(),
+                "admin-only" to (rank.adminOnly && rank.quest == null).isIsNot(),
+                "pets" to if (rank.pets.isEmpty()) "none" else rank.pets.joinToString(", "),
+                "quest" to
+                        if (rank.quest != null) if (playerStats != null)
+                            rank.quest.displayReference(player, "requirements", playerStats)
+                        else rank.quest.display(player, "requirements")
+                        else player.fmt("rank-info.no-quest")
             )
         }
 

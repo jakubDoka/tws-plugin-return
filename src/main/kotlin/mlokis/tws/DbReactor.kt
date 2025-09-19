@@ -9,6 +9,7 @@ import mindustry.game.EventType
 import mindustry.gen.Player
 import mindustry.mod.Plugin
 import arc.util.Log.*
+import mindustry.Vars
 import mindustry.gen.Groups
 import mindustry.net.Administration
 import java.sql.Connection
@@ -354,6 +355,11 @@ class DbReactor {
                 e.printStackTrace()
             }
         }
+
+
+        Vars.netServer.admins.unbanPlayerID(player.id)
+        for (ip in player.ips)
+            Vars.netServer.admins.unbanPlayerIP(ip)
 
         Groups.player.find { it.uuid() == player.id }?.stateKick("marked-griefer")
         info("marked ${player.id} as griefer: $reason")
