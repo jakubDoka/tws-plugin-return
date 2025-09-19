@@ -25,6 +25,7 @@ import mindustry.gen.Player
 import mindustry.io.MapIO
 import mindustry.mod.Plugin
 import mindustry.net.Administration
+import mindustry.net.Packets
 import mindustry.net.WorldReloader
 import mindustry.type.Item
 import mindustry.type.ItemStack
@@ -79,7 +80,7 @@ object Translations {
     fun t(locale: String, key: String, vararg args: Pair<String, Any?>): String {
         val default = maps[DEFAULT_LOCALE] ?: error("")
         val template = maps[locale]?.get(key) ?: default[key] ?: key
-        return args.fold(template.replace("\\n", "\n")) { acc, (k, v) ->
+        return args.fold(template.replace("\\n", "\n").replace("\\t", "\t")) { acc, (k, v) ->
             acc.replace("{$k}", v.toString())
         }
     }
@@ -98,9 +99,7 @@ fun Player.markKick(reason: String) = kick(
     fmt("mark-kick", "reason" to reason), 0
 )
 
-fun Player.stateKick(reason: String) = kick(
-    fmt("state-kick", "reason" to fmt("state-kick.$reason")), 0
-)
+fun Player.stateKick(reason: String) = kick(Packets.KickReason.serverRestarting)
 
 data class PlayerCapture(val fn: (Player) -> String)
 
@@ -490,9 +489,15 @@ class Main : Plugin() {
                     }
                     if (afkMarker !in player.name) {
                         player.name += afkMarker
+                    } else {
+                        val name = db.getPlayerNameByUuid(uuid)
+                        if (name != null) {
+                            db.addAfkTime(name, minAfkPeriod.toLong())
+                        }
                     }
                 }
             }
+            for (uuid in toRemove) playerActivityByUuid.remove(uuid)
         }, 0f, minAfkPeriod.toFloat() / 1000)
 
         val channel = if (bot != null && config.discord.bridgeChannelId != null) bot.getChannelById(
@@ -586,7 +591,37 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.BlockDestroyEvent::class.java) { event ->
+            for (player in Groups.player) {
+                if (player.team() != event.tile.team()) {
+                    val name = db.getPlayerNameByUuid(player.uuid())
+                    if (name != null) {
+                        db.addBlocksDestroyed(name)
+                    }
+                }
+            }
+
             permissionTable.remove(event.tile)
+        }
+
+
+        arc.Events.on(EventType.UnitChangeEvent::class.java) { event ->
+            if (event.unit == null) {
+                val name = db.getPlayerNameByUuid(event.player.uuid())
+                if (name != null) {
+                    db.addDeaths(name)
+                }
+            }
+        }
+
+        arc.Events.on(EventType.UnitDestroyEvent::class.java) { event ->
+            for (player in Groups.player) {
+                if (player.team() != event.unit.team()) {
+                    val name = db.getPlayerNameByUuid(player.uuid())
+                    if (name != null) {
+                        db.addEnemiesKilled(name)
+                    }
+                }
+            }
         }
 
         arc.Events.on(EventType.BlockBuildEndEvent::class.java) { event ->
@@ -603,6 +638,15 @@ class Main : Plugin() {
 
             if (event.breaking) {
                 permissionTable.remove(event.tile)
+            }
+        }
+
+        arc.Events.on(EventType.WaveEvent::class.java) { event ->
+            for (player in Groups.player) {
+                val name = db.getPlayerNameByUuid(player.uuid())
+                if (name != null) {
+                    db.addWavesSurvived(name)
+                }
             }
         }
 
@@ -687,6 +731,17 @@ class Main : Plugin() {
             doubleTaps.remove(event.player.uuid())
             pets.remove(event.player)
         }
+
+        arc.Events.on(EventType.PlayerChatEvent::class.java) { event ->
+            val name = db.getPlayerNameByUuid(event.player.uuid())
+            if (name != null) {
+                if (event.message.startsWith("/")) {
+                    db.addCommandsExecuted(name)
+                } else {
+                    db.addMessagesSent(name)
+                }
+            }
+        }
     }
 
 
@@ -718,7 +773,7 @@ class Main : Plugin() {
                 for (y in 0..<height) {
                     val tile = Vars.world.tile(x, y);
                     val color = MapIO.colorFor(tile.block(), tile.floor(), tile.overlay(), tile.team())
-                    image.setRGB(x, width - y - 1, color.rotateRight(8))
+                    image.setRGB(x, height - y - 1, color.rotateRight(8))
                 }
             }
 
@@ -885,6 +940,97 @@ class Main : Plugin() {
             register(name, "", callbalck)
         }
 
+        register("equip-rank", "<rank>") { args, player ->
+            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                player.send("no-login")
+                return@register
+            }
+
+            val currentRank = db.getRank(player)
+            val rankData = config.getRank(player, currentRank) ?: return@register
+
+            if (rankData.blockProtectionRank != BlockProtectionRank.Member) {
+                player.send("you are not verified, you can't equip a rank, use /tws-test-start to verify")
+            }
+
+            val rankName = args[0]
+
+            val rank = config.getRank(player, rankName) ?: run {
+                player.send("rank does not exist")
+                return@register
+            }
+
+            if (rank.blockProtectionRank != BlockProtectionRank.Member && !player.admin) {
+                player.send("rank is not equipable")
+                return@register
+            }
+
+            val playerStats = db.getPlayerScore(name) ?: run {
+                err("player ${player.name} has no stats")
+                player.send("BUG: player ${player.name} has no stats")
+                return@register
+            }
+
+            if (rank.quest == null && rank.adminOnly && !player.admin) {
+                player.send("rank is equipable only by admins")
+                return@register
+            }
+
+            if (rank.quest != null && !rank.quest.isObtained(playerStats)) {
+                player.send("rank is not obtained, see /rank-info ${rankName}")
+                return@register
+            }
+
+            db.setRank(name, rankName)
+            player.stateKick("rank-change")
+        }
+
+        register("list-ranks") { args, player ->
+            val ranks = config.ranks.keys.sorted()
+
+            val name = db.getPlayerNameByUuid(player.uuid())
+            val playerStats = if (name != null) db.getPlayerScore(name) else null
+
+            val message = buildString {
+                for (rank in ranks) {
+                    val rankData = config.ranks.getValue(rank)
+                    if (rankData.quest == null || playerStats == null || rankData.quest.isObtained(playerStats)) {
+                        appendLine("[${rankData.color}]$rank[]")
+                    } else {
+                        appendLine("[gray]$rank[]")
+                    }
+                }
+            }
+
+            player.sendMessage(message)
+        }
+
+        register("rank-info", "<rank>") { args, player ->
+            val rankName = args[0]
+
+            val rank = config.ranks[rankName] ?: run {
+                player.send("rank does not exist")
+                return@register
+            }
+
+            val name = db.getPlayerNameByUuid(player.uuid())
+            val playerStats = if (name != null) db.getPlayerScore(name) else null
+
+            player.send(
+                "[orange]-- ${rank.display(rankName)} --[]\n" +
+                        "block-protection-rank: ${rank.blockProtectionRank}\n" +
+                        "message-timeout: ${rank.messageTimeout.displayTime()}\n" +
+                        "vote-weight: ${rank.voteWeight}\n" +
+                        "visible: ${rank.visible}\n" +
+                        "pets: ${if (rank.pets.isEmpty()) "none" else rank.pets.joinToString(", ")}\n" +
+                        "quest: ${
+                            if (rank.quest != null) if (playerStats != null)
+                                rank.quest.displayReference(player, "requirements", playerStats)
+                            else rank.quest.display(player, "requirements") else "not obtainable"
+                        }\n"
+            )
+        }
+
         register("appear-afk") { args, player ->
             playerActivityByUuid
                 .getOrPut(player.uuid()) { PlayerActivityTracker() }
@@ -902,13 +1048,7 @@ class Main : Plugin() {
                 return@register
             }
 
-            player.send(
-                "player-stats.table",
-                "name" to name,
-                "blocks-broken" to playerScore.blocksBroken,
-                "blocks-placed" to playerScore.blocksPlaced,
-                "play-time" to playerScore.playTime.displayTime()
-            )
+            player.send(playerScore.display(player, name))
         }
 
         register("explain", "<griefer/rewind/pew-pew/account>") { args, player ->
@@ -961,7 +1101,13 @@ class Main : Plugin() {
 
                     sendToAll("rewind.foreshadowing")
 
+
+
                     arc.util.Timer.schedule({
+                        for (player in Groups.player) {
+                            player.kick(Packets.KickReason.serverRestarting)
+                        }
+
                         serverCommandHandler!!.handleMessage("stop")
                         serverCommandHandler!!.handleMessage("load $saveFileName")
                     }, 5f)
@@ -969,8 +1115,6 @@ class Main : Plugin() {
             })
             handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
-
-
 
         register("delete-core") { args, player ->
             val cores = setOf(
@@ -1622,6 +1766,8 @@ data class Rank(
     val messageTimeout: Long,
     val visible: Boolean,
     val pets: List<String> = listOf(),
+    val adminOnly: Boolean = true,
+    val quest: PlayerScore? = null,
 ) {
     companion object {
         const val GUEST = "guest"
@@ -1728,6 +1874,18 @@ data class Config(
                     visible = true,
                     messageTimeout = 0,
                     pets = listOf(),
+                ),
+                "active" to Rank(
+                    color = "white",
+                    blockProtectionRank = BlockProtectionRank.Member,
+                    voteWeight = 1,
+                    visible = true,
+                    messageTimeout = 0,
+                    pets = listOf(),
+                    quest = PlayerScore(
+                        blocksBroken = 10,
+                        blocksPlaced = 10,
+                    ),
                 ),
             ),
             TestConfig(

@@ -47,11 +47,20 @@ private class Queryes(val connection: Connection) {
     val getPlayerNameByDiscordId = initStmt("SELECT name FROM user WHERE discord_id = ?")
     val getUserDiscordId = initStmt("SELECT discord_id FROM user WHERE name = ?")
     val setDiscordId = initStmt("UPDATE user SET discord_id = ? WHERE name = ?")
-    val addBlockPlaced = initStmt("UPDATE user SET blocks_placed = blocks_placed + 1 WHERE name = ?")
-    val addBlockBroken = initStmt("UPDATE user SET blocks_broken = blocks_broken + 1 WHERE name = ?")
-    val addPlayTime = initStmt("UPDATE user SET play_time = play_time + ? WHERE name = ?")
     val setPlayerName = initStmt("UPDATE user SET name = ? WHERE name = ?")
     val changePassword = initStmt("UPDATE user SET password_hash = ? WHERE name = ?")
+
+    // PLAYER STATS
+    val addBlockPlaced = initStatIncStmt("blocks_placed")
+    val addBlockBroken = initStatIncStmt("blocks_broken")
+    val addPlayTime = initStatAddStmt("play_time")
+    val addMessagesSent = initStatIncStmt("messages_sent")
+    val addCommandsExecuted = initStatIncStmt("commands_executed")
+    val addEnemiesKilled = initStatIncStmt("enemies_killed")
+    val addWavesSurvived = initStatIncStmt("waves_survived")
+    val addAfkTime = initStatAddStmt("afk_time")
+    val addBlocksDestroyed = initStatIncStmt("blocks_destroyed")
+    val addDeaths = initStatIncStmt("deaths")
 
     // GRIEFER
     val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ?")
@@ -74,6 +83,12 @@ private class Queryes(val connection: Connection) {
                     " longest_playtime = max(longest_playtime, excluded.longest_playtime)"
         )
 
+    fun initStatIncStmt(propName: String): PreparedStatement =
+        initStmt("UPDATE user SET $propName = $propName + 1 WHERE name = ?")
+
+    fun initStatAddStmt(propName: String): PreparedStatement =
+        initStmt("UPDATE user SET $propName = $propName + ? WHERE name = ?")
+
     fun initStmt(str: String): PreparedStatement = try {
         connection.prepareStatement(str)
     } catch (e: SQLException) {
@@ -84,7 +99,73 @@ private class Queryes(val connection: Connection) {
 }
 
 data class MapScore(val maxWave: Int, val shortestPlaytime: Long, val longestPlaytime: Long)
-data class PlayerScore(val blocksBroken: Int, val blocksPlaced: Int, val playTime: Long)
+
+@Serializable
+data class PlayerScore(
+    val blocksBroken: Long = 0,
+    val blocksPlaced: Long = 0,
+    val playTime: Long = 0,
+    val messagesSent: Long = 0,
+    val commandsExecuted: Long = 0,
+    val enemiesKilled: Long = 0,
+    val wavesSurvived: Long = 0,
+    val afkTime: Long = 0,
+    val blocksDestroyed: Long = 0,
+    val deaths: Long = 0,
+) {
+    fun display(player: Player, name: String): String {
+        return player.fmt(
+            "player-stats.table",
+            "name" to name,
+            "blocks-broken" to blocksBroken,
+            "blocks-placed" to blocksPlaced,
+            "play-time" to playTime.displayTime(),
+            "messages-sent" to messagesSent,
+            "commands-executed" to commandsExecuted,
+            "enemies-killed" to enemiesKilled,
+            "waves-survived" to wavesSurvived,
+            "afk-time" to afkTime.displayTime(),
+            "blocks-destroyed" to blocksDestroyed,
+            "deaths" to deaths,
+        )
+    }
+
+    fun displayReference(player: Player, name: String, score: PlayerScore): String {
+        fun displayOutOf(score: Long, max: Long): String =
+            "[${if (score >= max) "green" else "gray"}]${score}[]/${max}"
+
+        fun displayTimeOutOf(score: Long, max: Long): String =
+            "[${if (score >= max) "green" else "gray"}]${score.displayTime()}[]/${max.displayTime()}"
+
+        return player.fmt(
+            "player-stats.table",
+            "name" to name,
+            "blocks-broken" to displayOutOf(score.blocksBroken, blocksBroken),
+            "blocks-placed" to displayOutOf(score.blocksPlaced, blocksPlaced),
+            "play-time" to displayTimeOutOf(score.playTime, playTime),
+            "messages-sent" to displayOutOf(score.messagesSent, messagesSent),
+            "commands-executed" to displayOutOf(score.commandsExecuted, commandsExecuted),
+            "enemies-killed" to displayOutOf(score.enemiesKilled, enemiesKilled),
+            "waves-survived" to displayOutOf(score.wavesSurvived, wavesSurvived),
+            "afk-time" to displayTimeOutOf(score.afkTime, afkTime),
+            "blocks-destroyed" to displayOutOf(score.blocksDestroyed, blocksDestroyed),
+            "deaths" to displayOutOf(score.deaths, deaths),
+        )
+    }
+
+    fun isObtained(playerStats: PlayerScore): Boolean {
+        return blocksBroken <= playerStats.blocksBroken &&
+                blocksPlaced <= playerStats.blocksPlaced &&
+                playTime <= playerStats.playTime &&
+                messagesSent <= playerStats.messagesSent &&
+                commandsExecuted <= playerStats.commandsExecuted &&
+                enemiesKilled <= playerStats.enemiesKilled &&
+                wavesSurvived <= playerStats.wavesSurvived &&
+                afkTime <= playerStats.afkTime &&
+                blocksDestroyed <= playerStats.blocksDestroyed &&
+                deaths <= playerStats.deaths
+    }
+}
 
 class DbReactor {
     private val qs: Queryes
@@ -126,15 +207,58 @@ class DbReactor {
         qs.addPlayTime.executeUpdate()
     }
 
+    fun addMessagesSent(name: String) {
+        qs.addMessagesSent.setString(1, name)
+        qs.addMessagesSent.executeUpdate()
+    }
+
+    fun addCommandsExecuted(name: String) {
+        qs.addCommandsExecuted.setString(1, name)
+        qs.addCommandsExecuted.executeUpdate()
+    }
+
+    fun addEnemiesKilled(name: String) {
+        qs.addEnemiesKilled.setString(1, name)
+        qs.addEnemiesKilled.executeUpdate()
+    }
+
+    fun addWavesSurvived(name: String) {
+        qs.addWavesSurvived.setString(1, name)
+        qs.addWavesSurvived.executeUpdate()
+    }
+
+    fun addAfkTime(name: String, time: Long) {
+        qs.addAfkTime.setLong(1, time)
+        qs.addAfkTime.setString(2, name)
+        qs.addAfkTime.executeUpdate()
+    }
+
+    fun addBlocksDestroyed(name: String) {
+        qs.addBlocksDestroyed.setString(1, name)
+        qs.addBlocksDestroyed.executeUpdate()
+    }
+
+    fun addDeaths(name: String) {
+        qs.addDeaths.setString(1, name)
+        qs.addDeaths.executeUpdate()
+    }
+
     fun getPlayerScore(name: String): PlayerScore? {
         qs.getUser.setString(1, name)
         val resultSet = qs.getUser.executeQuery()
         if (!resultSet.next()) return null
         // TODO: we might be able to reduce the boilerplate
         return PlayerScore(
-            blocksBroken = resultSet.getInt("blocks_broken"),
-            blocksPlaced = resultSet.getInt("blocks_placed"),
-            playTime = resultSet.getLong("play_time")
+            blocksBroken = resultSet.getLong("blocks_broken"),
+            blocksPlaced = resultSet.getLong("blocks_placed"),
+            playTime = resultSet.getLong("play_time"),
+            messagesSent = resultSet.getLong("messages_sent"),
+            commandsExecuted = resultSet.getLong("commands_executed"),
+            enemiesKilled = resultSet.getLong("enemies_killed"),
+            wavesSurvived = resultSet.getLong("waves_survived"),
+            afkTime = resultSet.getLong("afk_time"),
+            blocksDestroyed = resultSet.getLong("blocks_destroyed"),
+            deaths = resultSet.getLong("deaths"),
         )
     }
 

@@ -6,9 +6,17 @@ CREATE TABLE IF NOT EXISTS user (
 	joined_at INTEGER NOT NULL DEFAULT (unixepoch()),
 	rank TEXT NOT NULL DEFAULT "newcomer",
 	discord_id TEXT DEFAULT NULL,
+
 	blocks_broken INTEGER NOT NULL DEFAULT 0,
 	blocks_placed INTEGER NOT NULL DEFAULT 0,
-	play_time INTEGER NOT NULL DEFAULT 0
+	play_time INTEGER NOT NULL DEFAULT 0,
+	messages_sent INTEGER NOT NULL DEFAULT 0,
+	commands_executed INTEGER NOT NULL DEFAULT 0,
+	enemies_killed INTEGER NOT NULL DEFAULT 0,
+	waves_survived INTEGER NOT NULL DEFAULT 0,
+	afk_time INTEGER NOT NULL DEFAULT 0,
+	blocks_destroyed INTEGER NOT NULL DEFAULT 0,
+	deaths INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS discord_id_index ON user (discord_id);
