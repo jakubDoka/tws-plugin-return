@@ -24,7 +24,11 @@ import java.util.*
 class PewPew {
     val state = HashMap<Unit, State>()
     private val pool = Seq<State>()
-    val weaponSets = HashMap<UnitType, HashMap<Item, Weapon>>()
+    val weaponSets = HashMap<UnitType, HashMap<Item, WeaponEntry>>()
+
+    data class WeaponEntry(val playerWeapon: Weapon, val aiWeapon: Weapon) {
+        fun select(unit: Unit): Weapon = if (unit.isPlayer) playerWeapon else aiWeapon
+    }
 
     init {
         arc.Events.on(EventType.UnitDestroyEvent::class.java) {
@@ -53,7 +57,7 @@ class PewPew {
             val state = state.computeIfAbsent(unit) { pool.pop { State() } }
             state.reload += Time.delta / 60f
             if (unit.isShooting || state.inBurst > 0) {
-                weapon.shoot(unit, state)
+                weapon.select(unit).shoot(unit, state)
             }
         }
 
@@ -213,15 +217,15 @@ class PewPew {
         }
     }
 
-    fun reload(config: PewPewConfig) {
+    fun reload(playerConfig: PewPewConfig, aiConfig: PewPewConfig) {
         weaponSets.clear()
         try {
-            for ((k, set) in config.links) {
+            for ((k, set) in playerConfig.links) {
                 val unit =
                     Util.unit(k)
                         ?: throw error("unit '$k' does not exits ${Util.propertyNameList(UnitTypes::class.java)}")
                 if (unit.weapons.isEmpty) throw error("unit '$k' has no weapons thus it cannot hold any extra")
-                val map = HashMap<Item, Weapon>()
+                val map = HashMap<Item, WeaponEntry>()
                 for ((i, s) in set) {
                     val item = Util.item(i) ?: throw error(
                         "unit '$k' contains unknown item '$i', valud items are ${
@@ -230,12 +234,21 @@ class PewPew {
                             )
                         }"
                     )
-                    val stats = config.def[s]
+
+                    val playerStats = playerConfig.def[s]
                         ?: throw error(
                             "unit '$k' contains undefined link under '$i'," +
                                     " it should be contained in 'def' field"
                         )
-                    map[item] = Weapon(stats, unit, "$k-$i")
+
+                    val analogInAi = aiConfig.links[k]?.get(i)
+                    val aiStats = aiConfig.def[analogInAi] ?: playerConfig.def[analogInAi] ?: playerStats
+
+                    // NOTE: wastefull but eh
+                    map[item] = WeaponEntry(
+                        Weapon(playerStats, unit, "$k-$i"),
+                        Weapon(aiStats, unit, "$k-$i"),
+                    )
                 }
                 weaponSets[unit] = map
             }
