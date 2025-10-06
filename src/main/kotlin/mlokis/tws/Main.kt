@@ -821,7 +821,7 @@ class Main : Plugin() {
 
         discordCommands.register(
             "server-cmd",
-            "[args...]",
+            "<args...>",
             "execute a server command"
         ) { args, event: MessageReceivedEvent ->
             if (event.channel.id != config.discord.adminChannelId.toString()) {
@@ -969,7 +969,7 @@ class Main : Plugin() {
             appealChannel = bot.getChannelById(MessageChannel::class.java, config.discord.appealChannelId.toString())
         }
 
-        handler.register("appeal", "[message...]", Translations.assertDefault("appeal.desc")) { args, player: Player ->
+        handler.register("appeal", "<message...>", Translations.assertDefault("appeal.desc")) { args, player: Player ->
             if (!db.isGriefer(player.info)) {
                 player.send("appeal.not-griefer")
                 return@register
@@ -1575,7 +1575,6 @@ class Main : Plugin() {
 
 
         register("votekick", "<name/#id> <reason...>") { args, player ->
-
             if (Groups.player.size() < 3 && !player.admin) {
                 player.send("votekick.not-enough-players")
                 return@register
