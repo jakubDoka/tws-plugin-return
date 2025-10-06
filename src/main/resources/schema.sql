@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS login (
 		ON UPDATE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS appeal (
+	-- can be a uuid or ip address
+	appeal_key TEXT PRIMARY KEY
+);
+
 CREATE TABLE IF NOT EXISTS griefer (
 	-- can be a uuid or ip address
 	ban_key TEXT PRIMARY KEY

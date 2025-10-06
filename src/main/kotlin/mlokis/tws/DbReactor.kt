@@ -63,6 +63,12 @@ private class Queryes(val connection: Connection) {
     val addBlocksDestroyed = initStatIncStmt("blocks_destroyed")
     val addDeaths = initStatIncStmt("deaths")
 
+
+    // APPEAL
+    val markAppealed = initStmt("INSERT INTO appeal (appeal_key) VALUES (?)")
+    val hasAppealed = initStmt("SELECT * FROM appeal WHERE appeal_key = ?")
+
+
     // GRIEFER
     val isGriefer = initStmt("SELECT * FROM griefer WHERE ban_key = ?")
     val markGriefer = initStmt("INSERT INTO griefer (ban_key) VALUES (?)")
@@ -190,6 +196,33 @@ class DbReactor {
         }
 
         qs = Queryes(connection)
+    }
+
+    fun markAppealed(info: Administration.PlayerInfo) {
+        qs.markAppealed.setString(1, info.id)
+        qs.markAppealed.executeUpdate()
+
+        for (ip in info.ips) {
+            qs.markAppealed.setString(1, ip)
+            qs.markAppealed.executeUpdate()
+        }
+    }
+
+    fun hasAppealedKey(key: String): Boolean {
+        qs.hasAppealed.setString(1, key)
+        return qs.hasAppealed.executeQuery().next()
+    }
+
+    fun hasAppealed(info: Administration.PlayerInfo): Boolean {
+        qs.hasAppealed.setString(1, info.id)
+        if (qs.hasAppealed.executeQuery().next()) return true
+
+        for (ip in info.ips) {
+            qs.hasAppealed.setString(1, ip)
+            if (qs.hasAppealed.executeQuery().next()) return true
+        }
+
+        return false
     }
 
     fun addBlockPlaced(name: String) {

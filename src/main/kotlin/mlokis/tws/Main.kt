@@ -930,6 +930,16 @@ class Main : Plugin() {
                 }
             }
         }
+
+        handler.register("appeal-status", "<uuid/ip>", "get the appeal status of a given uuid/ip of a player") { args ->
+            val id = args[0]
+
+            if (db.hasAppealedKey(id)) {
+                info("player has already appealed")
+            } else {
+                info("player has not appealed yet")
+            }
+        }
     }
 
 
@@ -951,6 +961,39 @@ class Main : Plugin() {
 
         fun register(name: String, callbalck: (Array<String>, Player) -> Unit) {
             register(name, "", callbalck)
+        }
+
+
+        var appealChannel: MessageChannel? = null
+        if (config.discord.appealChannelId != null && bot != null) {
+            appealChannel = bot.getChannelById(MessageChannel::class.java, config.discord.appealChannelId.toString())
+        }
+
+        handler.register("appeal", "[message...]", Translations.assertDefault("appeal.desc")) { args, player: Player ->
+            if (!db.isGriefer(player.info)) {
+                player.send("appeal.not-griefer")
+                return@register
+            }
+
+            if (db.hasAppealed(player.info)) {
+                player.send("appeal.already-appealed")
+                return@register
+            }
+
+
+            var message = args[0]
+
+            if (message.isEmpty()) {
+                message = "no reason given"
+            }
+
+            val chan = appealChannel ?: run {
+                player.send("appeal.disabled")
+                return@register
+            }
+
+            chan.sendMessage("${player.plainName()} (${player.uuid()}) appealed: $message").queue()
+            db.markAppealed(player.info)
         }
 
         register("equip-rank", "<rank>") { args, player ->
