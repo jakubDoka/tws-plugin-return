@@ -238,8 +238,6 @@ class Main : Plugin() {
         val nayVotes: Int
             get() = nay.values.fold(0) { acc, weight -> acc + weight }
 
-        abstract val translationKey: String
-
         abstract fun onDisplay(player: Player): String
 
         abstract fun onPass()
@@ -969,6 +967,41 @@ class Main : Plugin() {
             appealChannel = bot.getChannelById(MessageChannel::class.java, config.discord.appealChannelId.toString())
         }
 
+
+        var wavesToSkip = 0;
+
+        arc.Events.on(EventType.UnitDestroyEvent::class.java) { event ->
+            if (Vars.state.enemies == 1 && wavesToSkip > 0) {
+                Vars.logic.runWave()
+                wavesToSkip--
+
+                if (wavesToSkip == 0) {
+                    sendToAll("skip-waves.success")
+                } else {
+                    sendToAll("skip-waves.waves-left", "waves" to wavesToSkip)
+                }
+            }
+        }
+
+        register("skip-waves", "<amount>") { args, player ->
+            val amount = args[0].toIntOrNull() ?: run {
+                player.send("skip-waves.invalid-amount")
+                return@register
+            }
+
+
+            voteSessions.add(object : VoteSession(player) {
+                override fun onDisplay(player: Player): String =
+                    player.fmt("skip-waves.session", "waves" to amount)
+
+                override fun onPass() {
+                    wavesToSkip = amount
+                }
+            })
+            handler.handleMessage("/vote y #${voteSessions.size}", player)
+        }
+
+
         handler.register("appeal", "<message...>", Translations.assertDefault("appeal.desc")) { args, player: Player ->
             if (!db.isGriefer(player.info)) {
                 player.send("appeal.not-griefer")
@@ -1142,8 +1175,6 @@ class Main : Plugin() {
 
 
             voteSessions.add(object : VoteSession(player) {
-                override val translationKey = "rewind"
-
                 override fun onDisplay(player: Player): String = player.fmt("rewind.session", "minutes" to minutes)
 
                 override fun onPass() {
@@ -1190,8 +1221,6 @@ class Main : Plugin() {
             }
 
             voteSessions.add(object : VoteSession(player) {
-                override val translationKey = "delete-core"
-
                 override fun onDisplay(player: Player): String = player.fmt("delet the core at ${tile.x}:${tile.y}")
 
                 override fun onPass() {
@@ -1245,8 +1274,6 @@ class Main : Plugin() {
             }
 
             voteSessions.add(object : VoteSession(player) {
-                override val translationKey = "build-core"
-
                 override fun onDisplay(player: Player): String = player.fmt(
                     "build-core.session",
                     "tilex" to tile.centerX().toString(),
@@ -1343,8 +1370,6 @@ class Main : Plugin() {
             val map = getMap(player, args[0]) ?: return@register
 
             voteSessions.add(object : VoteSession(player) {
-                override val translationKey = "map"
-
                 override fun onDisplay(player: Player): String =
                     player.fmt("switch-map", "name" to map.name())
 
@@ -1613,8 +1638,6 @@ class Main : Plugin() {
             }
 
             voteSessions.add(object : VoteSession(player) {
-                override val translationKey = "griefer"
-
                 override fun onDisplay(player: Player): String =
                     player.fmt("votekick.session", "name" to target.plainName(), "reason" to reason)
 
