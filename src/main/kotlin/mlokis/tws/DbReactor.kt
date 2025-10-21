@@ -57,7 +57,7 @@ private class Queryes(val connection: Connection) {
     val addPlayTime = initStatAddStmt("play_time")
     val addMessagesSent = initStatIncStmt("messages_sent")
     val addCommandsExecuted = initStatIncStmt("commands_executed")
-    val addEnemiesKilled = initStatIncStmt("enemies_killed")
+    val addEnemiesKilled = initStatAddStmt("enemies_killed")
     val addWavesSurvived = initStatIncStmt("waves_survived")
     val addAfkTime = initStatAddStmt("afk_time")
     val addBlocksDestroyed = initStatIncStmt("blocks_destroyed")
@@ -251,8 +251,9 @@ class DbReactor {
         qs.addCommandsExecuted.executeUpdate()
     }
 
-    fun addEnemiesKilled(name: String) {
-        qs.addEnemiesKilled.setString(1, name)
+    fun addEnemiesKilled(name: String, count: Int) {
+        qs.addEnemiesKilled.setInt(1, count)
+        qs.addEnemiesKilled.setString(2, name)
         qs.addEnemiesKilled.executeUpdate()
     }
 
@@ -445,12 +446,51 @@ class DbReactor {
         return resultSet.getString("rank") ?: Rank.GUEST
     }
 
-    fun getPlayerNameByUuid(uuid: String): String? {
-        qs.getLogin.setString(1, uuid)
-        val resultSet = qs.getLogin.executeQuery()
-        if (!resultSet.next()) return null
-        return resultSet.getString("name")
+    fun clearCachesFor(player: Player) {
+        playerUuidToNameCache.remove(player.uuid())
     }
+
+    val playerUuidToNameCache = mutableMapOf<String, String?>()
+
+    fun getPlayerNameByUuid(uuid: String): String? =
+        playerUuidToNameCache.getOrPut(uuid) {
+            qs.getLogin.setString(1, uuid)
+            val resultSet = qs.getLogin.executeQuery()
+            if (!resultSet.next()) return null
+
+
+            return resultSet.getString("name")
+        }
+
+    fun loginPlayer(player: Player, name: String, password: String): String? {
+        if (getPlayerNameByUuid(player.uuid()) != null) {
+            return "login.already-logged-in"
+        }
+
+        val err = validatePassword(name, password)
+        if (err != null) return err
+
+        qs.addLogin.setString(1, player.uuid())
+        qs.addLogin.setString(2, name)
+        qs.addLogin.executeUpdate()
+
+        playerUuidToNameCache[player.uuid()] = name
+
+        info("player ${name} logged in")
+        player.stateKick("login.success")
+
+        return null
+    }
+
+    fun logoutPlayer(player: Player): String? {
+        playerUuidToNameCache.remove(player.uuid())
+
+        qs.removeLogin.setString(1, player.uuid())
+        val count = qs.removeLogin.executeUpdate()
+        if (count == 0) return "logout.not-logged-in"
+        return null
+    }
+
 
     fun playerExists(name: String): Boolean {
         qs.getUser.setString(1, name)
@@ -539,24 +579,6 @@ class DbReactor {
         return null
     }
 
-    fun loginPlayer(player: Player, name: String, password: String): String? {
-        if (getPlayerNameByUuid(player.uuid()) != null) {
-            return "login.already-logged-in"
-        }
-
-        val err = validatePassword(name, password)
-        if (err != null) return err
-
-        qs.addLogin.setString(1, player.uuid())
-        qs.addLogin.setString(2, name)
-        qs.addLogin.executeUpdate()
-
-        info("player ${name} logged in")
-        player.stateKick("login.success")
-
-        return null
-    }
-
     fun validatePassword(name: String, password: String): String? {
         qs.getPasswordHash.setString(1, name)
         val resultSet = qs.getPasswordHash.executeQuery()
@@ -580,12 +602,6 @@ class DbReactor {
         return null
     }
 
-    fun logoutPlayer(player: Player): String? {
-        qs.removeLogin.setString(1, player.uuid())
-        val count = qs.removeLogin.executeUpdate()
-        if (count == 0) return "logout.not-logged-in"
-        return null
-    }
 
     fun registerPlayer(name: String, password: String): String? {
         val passwordHash = computePasswordHash(password)

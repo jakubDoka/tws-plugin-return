@@ -15,6 +15,9 @@ import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.full.primaryConstructor
 
 @Serializable
+data class RedirectConfig(val ip: String?, val port: Int?)
+
+@Serializable
 data class TestQuestion(val question: Map<String, String>, val answers: List<Map<String, String>>)
 
 @Serializable
@@ -94,6 +97,7 @@ data class Config(
     val rewind: RewindConfig,
     val pets: Map<String, Pets.Stats>,
     val buildCore: BuildCoreConfig,
+    val redirect: RedirectConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -256,6 +260,7 @@ data class Config(
                     "graphite" to 0.01f,
                 ),
             ),
+            RedirectConfig(null, null),
         )
 
         fun hotReload(apply: () -> Unit) {

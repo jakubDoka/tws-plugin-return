@@ -148,6 +148,23 @@ fun Long.displayTime(): String {
     return sb.toString()
 }
 
+class CachedCounter {
+    var stackedCount = 0
+    var flushTask: arc.util.Timer.Task? = null
+
+    fun inc(periond: Float, flush: (Int) -> Unit) {
+        if (flushTask == null) {
+            flushTask = arc.util.Timer.schedule({
+                flushTask = null
+                flush(stackedCount)
+                stackedCount = 0
+            }, 1f)
+        }
+
+        stackedCount++
+    }
+}
+
 class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
@@ -226,10 +243,8 @@ class Main : Plugin() {
                     val rankObj = config.getRank(player, rank) ?: continue
                     needed += rankObj.voteWeight
                 }
-                if (needed % 2 == 1) needed += 1
-                needed /= 2
 
-                needed
+                (needed / 2) + 1
             }
 
         val yeaVotes: Int
@@ -613,12 +628,15 @@ class Main : Plugin() {
             }
         }
 
+        val unitDeaths = CachedCounter()
         arc.Events.on(EventType.UnitDestroyEvent::class.java) { event ->
-            for (player in Groups.player) {
-                if (player.team() != event.unit.team()) {
-                    val name = db.getPlayerNameByUuid(player.uuid())
-                    if (name != null) {
-                        db.addEnemiesKilled(name)
+            unitDeaths.inc(1f) { stackedUnitDeaths ->
+                for (player in Groups.player) {
+                    if (player.team() != event.unit.team()) {
+                        val name = db.getPlayerNameByUuid(player.uuid())
+                        if (name != null) {
+                            db.addEnemiesKilled(name, stackedUnitDeaths)
+                        }
                     }
                 }
             }
@@ -673,6 +691,11 @@ class Main : Plugin() {
         }, 0f, 60f)
 
         arc.Events.on(EventType.PlayerConnect::class.java) { event ->
+            if (config.redirect.ip != null && config.redirect.port != null) {
+                Call.connect(event.player.con, config.redirect.ip!!, config.redirect.port!!)
+                return@on
+            }
+
             val err = db.loadPlayer(event.player, config)
             if (err != null) {
                 event.player.send(err)
@@ -724,6 +747,7 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.PlayerLeave::class.java) { event ->
+            db.clearCachesFor(event.player)
             for (session in voteSessions) {
                 session.nay.remove(event.player)
                 session.yea.remove(event.player)
@@ -942,6 +966,17 @@ class Main : Plugin() {
 
 
     override fun registerClientCommands(handler: CommandHandler) {
+        fun addSession(session: VoteSession) {
+            val existing = voteSessions.find { it.initiator.uuid() == session.initiator.uuid() }
+            if (existing != null) {
+                voteSessions.remove(existing)
+                session.initiator.send("vote.session-replaced")
+            }
+
+            voteSessions.add(session)
+            handler.handleMessage("/vote y #${voteSessions.size}", session.initiator)
+        }
+
         fun register(
             name: String,
             signature: String,
@@ -983,14 +1018,23 @@ class Main : Plugin() {
             }
         }
 
+        register("giveup") { args, player ->
+            addSession(object : VoteSession(player) {
+                override fun onDisplay(player: Player): String = player.fmt("giveup.session")
+
+                override fun onPass() {
+                    serverCommandHandler!!.handleMessage("gameover")
+                }
+            })
+        }
+
         register("skip-waves", "<amount>") { args, player ->
             val amount = args[0].toIntOrNull() ?: run {
                 player.send("skip-waves.invalid-amount")
                 return@register
             }
 
-
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String =
                     player.fmt("skip-waves.session", "waves" to amount)
 
@@ -998,7 +1042,6 @@ class Main : Plugin() {
                     wavesToSkip = amount
                 }
             })
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
 
@@ -1173,8 +1216,7 @@ class Main : Plugin() {
                 return@register
             }
 
-
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String = player.fmt("rewind.session", "minutes" to minutes)
 
                 override fun onPass() {
@@ -1187,21 +1229,15 @@ class Main : Plugin() {
                                 .absoluteValue
                         }
 
-                    sendToAll("rewind.foreshadowing")
+                    for (player in Groups.player) {
+                        player.kick(Packets.KickReason.serverRestarting)
+                    }
 
-
-
-                    arc.util.Timer.schedule({
-                        for (player in Groups.player) {
-                            player.kick(Packets.KickReason.serverRestarting)
-                        }
-
-                        serverCommandHandler!!.handleMessage("stop")
-                        serverCommandHandler!!.handleMessage("load $saveFileName")
-                    }, 5f)
+                    serverCommandHandler!!.handleMessage("stop")
+                    serverCommandHandler!!.handleMessage("load $saveFileName")
                 }
             })
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
+
         }
 
         register("delete-core") { args, player ->
@@ -1220,7 +1256,7 @@ class Main : Plugin() {
                 player.send("what you are hovering over is not a core, allowed blocks are $cores")
             }
 
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String = player.fmt("delet the core at ${tile.x}:${tile.y}")
 
                 override fun onPass() {
@@ -1231,8 +1267,6 @@ class Main : Plugin() {
                     Call.deconstructFinish(tile, tile.build?.block, null)
                 }
             });
-
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
 
@@ -1273,7 +1307,7 @@ class Main : Plugin() {
                 return@register
             }
 
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String = player.fmt(
                     "build-core.session",
                     "tilex" to tile.centerX().toString(),
@@ -1298,7 +1332,6 @@ class Main : Plugin() {
                     );
                 }
             })
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
         register("list-maps", "[page]") { args, player ->
@@ -1369,7 +1402,7 @@ class Main : Plugin() {
         register("switch-map", "<#map-id/map-name>") { args, player ->
             val map = getMap(player, args[0]) ?: return@register
 
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String =
                     player.fmt("switch-map", "name" to map.name())
 
@@ -1386,8 +1419,6 @@ class Main : Plugin() {
                     reload.end()
                 }
             })
-
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
         register("help", "[page]") { args, player: Player ->
@@ -1637,7 +1668,7 @@ class Main : Plugin() {
                 return@register
             }
 
-            voteSessions.add(object : VoteSession(player) {
+            addSession(object : VoteSession(player) {
                 override fun onDisplay(player: Player): String =
                     player.fmt("votekick.session", "name" to target.plainName(), "reason" to reason)
 
@@ -1646,8 +1677,6 @@ class Main : Plugin() {
                     db.markGriefer(target.info, reason)
                 }
             })
-
-            handler.handleMessage("/vote y #${voteSessions.size}", player)
         }
 
         register("vote", "<y/n/c> [#id]") { args, player ->
