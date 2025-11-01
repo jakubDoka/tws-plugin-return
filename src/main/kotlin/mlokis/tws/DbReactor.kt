@@ -513,6 +513,8 @@ class DbReactor {
         @Serializable
         data class Response(val security: Security)
 
+        var format = Json { ignoreUnknownKeys = true }
+
         java.net.http.HttpClient.newHttpClient()
             .sendAsync(
                 java.net.http.HttpRequest.newBuilder()
@@ -522,9 +524,7 @@ class DbReactor {
             .thenApply { it.body() }
             .thenAccept { body ->
                 try {
-                    val response = Json {
-                        ignoreUnknownKeys = true
-                    }.decodeFromString<Response>(body)
+                    val response = format.decodeFromString<Response>(body)
 
                     val mod = if (response.security.vpn) "VPN"
                     else if (response.security.tor) "TOR Connection"

@@ -292,6 +292,8 @@ data class Config(
         fun load(): Config {
             java.io.File(PATH).mkdirs()
 
+            val format = Json { prettyPrint = true }
+
             val fields = mutableListOf<Any>()
 
             for (prop in Config::class.primaryConstructor!!.parameters) {
@@ -302,9 +304,7 @@ data class Config(
                     file.createNewFile()
                     val default = Config::class.declaredMemberProperties
                         .find { it.name == prop.name }!!.get(default)
-                    file.writeText(Json {
-                        prettyPrint = true
-                    }.encodeToString(serde, default));
+                    file.writeText(format.encodeToString(serde, default));
                 }
 
                 fields.add(Json.decodeFromString(serde, file.readText())!!)

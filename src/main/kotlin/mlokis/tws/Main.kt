@@ -165,6 +165,23 @@ class CachedCounter {
     }
 }
 
+class SkipWaves {
+    var toSkip = 0
+
+    fun update() {
+        if (Vars.state.enemies == 0 && toSkip > 0) {
+            Vars.logic.runWave()
+            toSkip--
+
+            if (toSkip == 0) {
+                sendToAll("skip-waves.success")
+            } else {
+                sendToAll("skip-waves.waves-left", "waves" to toSkip)
+            }
+        }
+    }
+}
+
 class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
@@ -176,6 +193,7 @@ class Main : Plugin() {
     var grieferMarkTime = 0L
     var serverCommandHandler: CommandHandler? = null
     var rewindSaverTask: arc.util.Timer.Task? = null
+    val skipWaves = SkipWaves()
     val bot: JDA? = run {
         JDABuilder
             .createLight(
@@ -400,6 +418,7 @@ class Main : Plugin() {
         arc.Events.run(EventType.Trigger.update) {
             pewPew.update()
             pets.update()
+            skipWaves.update()
         }
 
         Log.useColors = false
@@ -1003,20 +1022,6 @@ class Main : Plugin() {
         }
 
 
-        var wavesToSkip = 0;
-
-        arc.Events.on(EventType.UnitDestroyEvent::class.java) { event ->
-            if (Vars.state.enemies == 1 && wavesToSkip > 0) {
-                Vars.logic.runWave()
-                wavesToSkip--
-
-                if (wavesToSkip == 0) {
-                    sendToAll("skip-waves.success")
-                } else {
-                    sendToAll("skip-waves.waves-left", "waves" to wavesToSkip)
-                }
-            }
-        }
 
         register("giveup") { args, player ->
             addSession(object : VoteSession(player) {
@@ -1039,7 +1044,7 @@ class Main : Plugin() {
                     player.fmt("skip-waves.session", "waves" to amount)
 
                 override fun onPass() {
-                    wavesToSkip = amount
+                    skipWaves.toSkip = amount
                 }
             })
         }
