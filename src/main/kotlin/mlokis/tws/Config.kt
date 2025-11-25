@@ -15,6 +15,9 @@ import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.full.primaryConstructor
 
 @Serializable
+data class RedirectConfig(val ip: String?, val port: Int?)
+
+@Serializable
 data class TestQuestion(val question: Map<String, String>, val answers: List<Map<String, String>>)
 
 @Serializable
@@ -94,6 +97,7 @@ data class Config(
     val rewind: RewindConfig,
     val pets: Map<String, Pets.Stats>,
     val buildCore: BuildCoreConfig,
+    val redirect: RedirectConfig,
 ) {
     fun getRank(player: Player, name: String): Rank? {
         return ranks[name] ?: run {
@@ -256,6 +260,7 @@ data class Config(
                     "graphite" to 0.01f,
                 ),
             ),
+            RedirectConfig(null, null),
         )
 
         fun hotReload(apply: () -> Unit) {
@@ -287,6 +292,8 @@ data class Config(
         fun load(): Config {
             java.io.File(PATH).mkdirs()
 
+            val format = Json { prettyPrint = true }
+
             val fields = mutableListOf<Any>()
 
             for (prop in Config::class.primaryConstructor!!.parameters) {
@@ -297,9 +304,7 @@ data class Config(
                     file.createNewFile()
                     val default = Config::class.declaredMemberProperties
                         .find { it.name == prop.name }!!.get(default)
-                    file.writeText(Json {
-                        prettyPrint = true
-                    }.encodeToString(serde, default));
+                    file.writeText(format.encodeToString(serde, default));
                 }
 
                 fields.add(Json.decodeFromString(serde, file.readText())!!)
