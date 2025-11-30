@@ -203,7 +203,7 @@ class Main : Plugin() {
             .addEventListeners(object : ListenerAdapter() {
                 override fun onMessageReceived(event: MessageReceivedEvent) {
                     if (event.message.channel.id == config.discord.bridgeChannelId?.toString() && !event.author.isBot) {
-                        val message = DiscordMessage(event.author.id, event.author.name, event.message.contentRaw)
+                        val message = DiscordMessage(event.author.id, event.author.name, event.message.contentDisplay)
                         arc.Core.app.post { forwardDiscordMessage(message) }
                     }
 
@@ -576,12 +576,18 @@ class Main : Plugin() {
                 val userId = if (name != null) db.getUserDiscordId(name) else null
                 val username = if (userId != null) {
                     bot!!.retrieveUserById(userId).queue {
-                        channel.sendMessage("[**${it.effectiveName}**]: $message").queue()
+                        channel.sendMessage("[**${it.effectiveName}**]: $message")
+                            .setAllowedMentions(Collections.emptySet())
+                            .queue()
                     }
                 } else if (name != null) {
-                    channel.sendMessage("[$name]: $message").queue()
+                    channel.sendMessage("[$name]: $message")
+                        .setAllowedMentions(Collections.emptySet())
+                        .queue()
                 } else {
-                    channel.sendMessage("[*${player.plainName()}*]: $message").queue()
+                    channel.sendMessage("[*${player.plainName()}*]: $message")
+                        .setAllowedMentions(Collections.emptySet())
+                        .queue()
                 }
             }
 
@@ -603,8 +609,23 @@ class Main : Plugin() {
             val playerRank = config.getRank(it.player, playerRankName)
                 ?: return@addActionFilter false
 
+
             val tile = it.tile ?: return@addActionFilter true
             val bp = permissionTable[tile] ?: defaultPermission
+
+            var catchesProtectedBlock = false;
+            if (it.type == Administration.ActionType.placeBlock) {
+                val offset = -(it.block.size - 1) / 2;
+
+                for (dx in 0..<it.block.size) {
+                    for (dy in 0..<it.block.size) {
+                        val worldx = dx + offset + it.tile.x;
+                        val worldy = dy + offset + it.tile.y;
+
+                        val tile = Vars.world.tile(worldx, worldy);
+                    }
+                }
+            }
 
             if (bp.protectionRank.ordinal > playerRank.blockProtectionRank.ordinal && !bp.issuer.isAfk) {
                 it.player.send(
