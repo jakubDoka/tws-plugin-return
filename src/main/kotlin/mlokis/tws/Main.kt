@@ -34,6 +34,7 @@ import mindustry.world.blocks.environment.OreBlock
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
+import net.dv8tion.jda.api.entities.Message
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
@@ -457,14 +458,18 @@ class Main : Plugin() {
                         val msg = logList.poll() ?: break
                         if (batch.length + msg.length + 1 > maxMessageLength) {
                             // flush current batch
-                            channel.sendMessage(batch).queue()
+                            channel.sendMessage(batch)
+                                .setAllowedMentions(Collections.emptySet())
+                                .queue()
                             batch.clear()
                         }
                         batch.appendLine(msg)
                     }
 
                     if (batch.isNotEmpty()) {
-                        channel.sendMessage(batch).queue()
+                        channel.sendMessage(batch)
+                            .setAllowedMentions(Collections.emptySet())
+                            .queue()
                     }
 
                 }, 0.1f)
