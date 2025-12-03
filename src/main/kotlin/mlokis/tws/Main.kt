@@ -1508,11 +1508,12 @@ class Main : Plugin() {
                     player.send("connect-discord.already-sent")
                 }
 
-                val pin = player.fmt("connect-discord.pin-message", "pin" to Random.nextInt(1000, 9999))
+                val pin = Random.nextInt(1000, 9999);
+                val pinMsg = player.fmt("connect-discord.pin-message", "pin" to pin)
 
                 bot.retrieveUserById(id).queue({ user ->
                     user.openPrivateChannel().queue {
-                        it.sendMessage(pin).queue()
+                        it.sendMessage(pinMsg).queue()
 
                         arc.Core.app.post {
                             discordConnectionSessions["$pin:$name"] = id
