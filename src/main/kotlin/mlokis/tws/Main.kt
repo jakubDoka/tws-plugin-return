@@ -29,6 +29,7 @@ import mindustry.net.Packets
 import mindustry.net.WorldReloader
 import mindustry.type.Item
 import mindustry.type.ItemStack
+import mindustry.world.Block
 import mindustry.world.Tile
 import mindustry.world.blocks.environment.OreBlock
 import net.dv8tion.jda.api.JDA
@@ -616,10 +617,11 @@ class Main : Plugin() {
 
 
             val tile = it.tile ?: return@addActionFilter true
-            val bp = permissionTable[tile] ?: defaultPermission
+            var bp = permissionTable[tile] ?: defaultPermission
 
-            var catchesProtectedBlock = false;
-            if (it.type == Administration.ActionType.placeBlock) {
+            fun forBlockTiles(block: Block?, each: (tile: Tile) -> Unit) {
+                if (block == null) return
+
                 val offset = -(it.block.size - 1) / 2;
 
                 for (dx in 0..<it.block.size) {
@@ -628,7 +630,20 @@ class Main : Plugin() {
                         val worldy = dy + offset + it.tile.y;
 
                         val tile = Vars.world.tile(worldx, worldy);
+                        each(tile)
                     }
+                }
+            }
+
+            var catchesProtectedBlock = false;
+            if (it.type == Administration.ActionType.placeBlock) {
+                forBlockTiles(it.block) { tile ->
+                    val obp = permissionTable[tile] ?: defaultPermission
+
+                    if (obp.issuer.isAfk) return@forBlockTiles
+                    if (obp.protectionRank.ordinal < bp.protectionRank.ordinal) return@forBlockTiles
+
+                    bp = obp;
                 }
             }
 
@@ -645,7 +660,9 @@ class Main : Plugin() {
                 permissionTable.remove(tile)
             }
 
-            interactions[tile] = Interaction(it.player.name, it.type)
+            forBlockTiles(it.block) { tile ->
+                interactions[tile] = Interaction(it.player.name, it.type)
+            }
 
             return@addActionFilter true
         }
@@ -1733,7 +1750,10 @@ class Main : Plugin() {
             }
 
             val playerRankName = db.getRank(player)
-            val playerRank = config.getRank(player, playerRankName) ?: return@register
+            val playerRank = config.getRank(player, playerRankName) ?: run {
+                player.send("bug.msg")
+                return@register
+            }
 
             val session = voteSessions[index - 1]
             when (vote) {
