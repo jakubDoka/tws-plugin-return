@@ -1028,6 +1028,30 @@ class Main : Plugin() {
 
 
     override fun registerClientCommands(handler: CommandHandler) {
+        var playerInputId = 0
+        val passwordInputs = mutableMapOf<Int, (String) -> Unit>()
+        arc.Events.on(EventType.TextInputEvent::class.java) {
+            passwordInputs.remove(it.textInputId)?.invoke(it.text ?: return@on)
+        }
+
+        fun Player.prompt(title: String, message: String, callback: (String) -> Unit) {
+            Call.textInput(con, playerInputId, title, message, 1024, "", false)
+            passwordInputs[playerInputId] = callback
+            playerInputId++
+        }
+
+        var playerMenuId = 0;
+        val menus = mutableMapOf<Int, (Int) -> Unit>()
+        arc.Events.on(EventType.MenuOptionChooseEvent::class.java) {
+            menus.remove(it.menuId)?.invoke(it.option)
+        }
+
+        fun Player.choose(title: String, message: String, options: Array<String>, callback: (Int) -> Unit) {
+            Call.menu(con, playerMenuId, title, message, arrayOf(options))
+            menus[playerMenuId] = callback
+            playerMenuId++
+        }
+
         fun addSession(session: VoteSession) {
             val existing = voteSessions.find { it.initiator.uuid() == session.initiator.uuid() }
             if (existing != null) {
@@ -1569,19 +1593,59 @@ class Main : Plugin() {
         }
 
 
-        class TestSession {
+        class TestSession() {
             var questionIndex = 0
             var failedQuestions = 0
-            var answerMatrix = mutableListOf<Int>()
 
-            fun generateAnswerMatrix() {
-                answerMatrix = config.test.questions[questionIndex].answers.indices.toMutableList()
+            fun ask(player: Player) {
+                val answerMatrix = config.test.questions[questionIndex]
+                    .answers.indices.toMutableList()
                 answerMatrix.shuffle()
+
+                val question = config.test.questions[questionIndex]
+                player.choose(
+                    "Test question", player.selectLocale(question.question),
+                    (answerMatrix
+                        .map { j -> player.selectLocale(question.answers[j]) }).toTypedArray()
+                ) { answer ->
+
+                    val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
+                        player.send("no-login")
+                        return@choose
+                    }
+
+                    if (answerMatrix[answer] != 0) {
+                        failedQuestions++
+                    }
+
+                    questionIndex++
+
+                    if (questionIndex < config.test.questions.size) {
+                        ask(player)
+                        return@choose
+                    }
+
+                    player.send("tws-test.answer.finished")
+
+                    if (failedQuestions != 0) {
+                        player.send(
+                            "tws-test.answer.failed",
+                            "failed-questions" to failedQuestions,
+                            "timeout" to config.test.timeout
+                        )
+
+                        db.addFailedTestSession(name)
+                        return@choose
+                    }
+
+                    db.setRank(name, Rank.VERIFIED)
+                    player.stateKick("verified")
+                }
             }
         }
 
+
         // player name -> TestSession
-        val testSessions = mutableMapOf<String, TestSession>()
         register("tws-test-start") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
@@ -1600,84 +1664,9 @@ class Main : Plugin() {
                 }
             }
 
-            if (testSessions[name] != null) {
-                player.send("tws-test.start.already-in-session")
-                return@register
-            }
-
-            testSessions[name] = TestSession()
-
             player.send("tws-test.start.start")
-            handler.handleMessage("/tws-test-show", player)
+            TestSession().ask(player)
         }
-
-        register("tws-test-show") { args, player ->
-            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("no-login")
-                return@register
-            }
-
-            val session = testSessions[name] ?: run {
-                player.send("tws-test.no-session")
-                return@register
-            }
-
-            if (session.answerMatrix.isEmpty()) {
-                session.generateAnswerMatrix()
-            }
-
-            val question = config.test.questions[session.questionIndex]
-            player.sendMessage("${player.selectLocale(question.question)}:")
-            for ((i, j) in session.answerMatrix.withIndex()) {
-                player.sendMessage("  ${i + 1}. ${player.selectLocale(question.answers[j])}")
-            }
-        }
-
-        register("tws-test-answer", "<answer>") { args, player ->
-            val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
-                player.send("no-login")
-                return@register
-            }
-
-            val session = testSessions[name] ?: run {
-                player.send("tws-test.no-session")
-                return@register
-            }
-
-            val answer = min(max(args[0].toIntOrNull() ?: run {
-                player.send("tws-test.answer.nan")
-                return@register
-            }, 1), session.answerMatrix.size) - 1
-
-            if (session.answerMatrix[answer] != 0) {
-                session.failedQuestions++
-            }
-
-            session.questionIndex++
-
-            if (session.questionIndex < config.test.questions.size) {
-                handler.handleMessage("/tws-test-show", player)
-                return@register
-            }
-
-            player.send("tws-test.answer.finished")
-            testSessions.remove(name)
-
-            if (session.failedQuestions != 0) {
-                player.send(
-                    "tws-test.answer.failed",
-                    "failed-questions" to session.failedQuestions,
-                    "timeout" to config.test.timeout
-                )
-
-                db.addFailedTestSession(name)
-                return@register
-            }
-
-            db.setRank(name, Rank.VERIFIED)
-            player.stateKick("verified")
-        }
-
 
         register("votekick", "<name/#id> <reason...>") { args, player ->
             if (Groups.player.size() < 3 && !player.admin) {
@@ -1801,18 +1790,6 @@ class Main : Plugin() {
             }
         }
 
-
-        var playerInputId = 0
-        val passwordInputs = mutableMapOf<Int, (String) -> Unit>()
-        arc.Events.on(EventType.TextInputEvent::class.java) {
-            passwordInputs.remove(it.textInputId)?.invoke(it.text)
-        }
-
-        fun Player.prompt(title: String, message: String, callback: (String) -> Unit) {
-            Call.textInput(con, playerInputId, title, message, 1024, "", false)
-            passwordInputs[playerInputId] = callback
-            playerInputId++
-        }
 
         register("login", "<username>") { args, player ->
             val username = args[0]
