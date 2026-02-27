@@ -1597,17 +1597,28 @@ class Main : Plugin() {
             var questionIndex = 0
             var failedQuestions = 0
 
+
             fun ask(player: Player) {
                 val answerMatrix = config.test.questions[questionIndex]
                     .answers.indices.toMutableList()
                 answerMatrix.shuffle()
 
                 val question = config.test.questions[questionIndex]
+
+                val message = buildString {
+                    append(player.selectLocale(question.question))
+                    append("\n")
+                    for ((i, j) in answerMatrix.withIndex()) {
+                        append("${i + 1}: ${player.selectLocale(question.answers[j])}\n")
+                    }
+                }
+
                 player.choose(
-                    "Test question", player.selectLocale(question.question),
-                    (answerMatrix
-                        .map { j -> player.selectLocale(question.answers[j]) }).toTypedArray()
+                    "Test question", message,
+                    (0..<question.answers.size).map { "${it + 1}" }.toTypedArray()
                 ) { answer ->
+
+                    if (answer == -1) return@choose;
 
                     val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                         player.send("no-login")
