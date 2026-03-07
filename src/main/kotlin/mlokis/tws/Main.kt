@@ -188,7 +188,7 @@ class Main : Plugin() {
     var config = Config.load()
     val pewPew = PewPew()
     val pets = Pets()
-    val db = DbReactor()
+    val db = DbReactor(config)
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
     var gameStartTime = 0L
@@ -403,7 +403,7 @@ class Main : Plugin() {
         }
 
         var debounceTask: arc.util.Timer.Task? = null
-        Config.hotReload {
+        Config.hotReload(config.globalConfig.configDir) {
             debounceTask?.cancel()
             debounceTask = arc.util.Timer.schedule({
                 try {

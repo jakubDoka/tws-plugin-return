@@ -32,7 +32,6 @@ desktop-sdl/build/
 /core/src/io/anuke/mindustry/gen/
 ios/robovm.properties
 packr-out/
-config/
 *.gif
 
 version.properties
@@ -164,6 +163,7 @@ server-release.jar
 
 # Other
 /config
+/globalCfg
 Mindustry.jar
 server-release.jar
 sample.db

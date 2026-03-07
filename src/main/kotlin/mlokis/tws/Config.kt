@@ -88,7 +88,14 @@ data class BuildCoreConfig(val serpuloScaling: Map<String, Float>, val erekirSca
 }
 
 @Serializable
+data class GlobalConfig(
+    val configDir: String?,
+    val dbPath: String,
+)
+
+@Serializable
 data class Config(
+    val globalConfig: GlobalConfig,
     val ranks: Map<String, Rank>,
     val test: TestConfig,
     val discord: DiscordConfig,
@@ -110,6 +117,7 @@ data class Config(
         const val PATH = "config/tws/"
 
         val default = Config(
+            GlobalConfig(null, "sample.db"),
             mapOf(
                 Rank.GRIEFER to Rank(
                     color = "pink",
@@ -263,22 +271,26 @@ data class Config(
             RedirectConfig(null, null),
         )
 
-        fun hotReload(apply: () -> Unit) {
-            val path = Paths.get(PATH)
+        fun hotReload(globalDir: String?, apply: () -> Unit) {
             val watchService = FileSystems.getDefault().newWatchService()
 
-            path.register(
+            Paths.get(PATH).register(
                 watchService,
                 StandardWatchEventKinds.ENTRY_MODIFY
             )
+
+            if (globalDir != null) {
+                Paths.get(globalDir).register(
+                    watchService,
+                    StandardWatchEventKinds.ENTRY_MODIFY
+                )
+            }
 
 
             Thread {
                 while (true) {
                     val key = watchService.take()
                     for (event in key.pollEvents()) {
-                        val kind = event.kind()
-                        val fileName = event.context() as Path
                         apply()
                     }
                     val valid = key.reset()
@@ -294,10 +306,31 @@ data class Config(
 
             val format = Json { prettyPrint = true }
 
+            val globalConfigFile = java.io.File(PATH + "globalConfig.json");
+            if (!globalConfigFile.exists()) {
+                globalConfigFile.createNewFile()
+                globalConfigFile.writeText(format.encodeToString(default.globalConfig));
+            }
+            val globalConfig: GlobalConfig = Json.decodeFromString(
+                globalConfigFile.readText()
+            );
+
             val fields = mutableListOf<Any>()
 
-            for (prop in Config::class.primaryConstructor!!.parameters) {
-                val file = java.io.File(PATH + prop.name + ".json")
+            fields.add(globalConfig)
+
+            for ((i, prop) in Config::class
+                .primaryConstructor!!.parameters.withIndex()) {
+
+                if (i == 0) continue
+
+                var file = java.io.File(PATH + prop.name + ".json")
+                if (!file.exists() && globalConfig.configDir != null) {
+                    val repl = java.io.File(
+                        globalConfig.configDir + "/" + prop.name + ".json"
+                    )
+                    if (repl.exists()) file = repl;
+                }
 
                 val serde = Json.serializersModule.serializer(prop.type);
                 if (!file.exists()) {

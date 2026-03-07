@@ -174,14 +174,15 @@ data class PlayerScore(
     }
 }
 
-class DbReactor {
+class DbReactor(config: Config) {
     private val qs: Queryes
     private val connection: Connection
     private val hasher: Argon2 = Argon2Factory.create()
 
     init {
         Class.forName("org.sqlite.JDBC")
-        connection = DriverManager.getConnection("jdbc:sqlite:sample.db")!!
+        connection = DriverManager
+            .getConnection("jdbc:sqlite:${config.globalConfig.dbPath}")!!
         val statement = connection.createStatement()!!
 
         val sql = object {}.javaClass
