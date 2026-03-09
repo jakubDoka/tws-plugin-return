@@ -1423,8 +1423,7 @@ class Main : Plugin() {
             val result = StringBuilder();
             result.append(player.fmt("list-maps.header", "current-page" to page + 1, "total-pages" to pages))
             result.append("\n\n")
-            for (i in commandsPerPage * page..<min(commandsPerPage * (page + 1), handler.commandList.size)) {
-                val command = handler.commandList[i];
+            for (i in commandsPerPage * page..<min(commandsPerPage * (page + 1), maps.size)) {
                 result.append("[yellow]#${i + 1}[]: ${maps[i]}\n")
             }
 

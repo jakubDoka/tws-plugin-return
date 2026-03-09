@@ -164,6 +164,7 @@ server-release.jar
 # Other
 /config
 /globalCfg
+/pvp
 Mindustry.jar
 server-release.jar
 sample.db

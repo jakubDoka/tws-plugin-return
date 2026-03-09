@@ -90,6 +90,8 @@ private class Queryes(val connection: Connection) {
                     " longest_playtime = max(longest_playtime, excluded.longest_playtime)"
         )
 
+    val addTest = initStmt("INSERT INTO test (id) VALUES (?)")
+
     fun initStatIncStmt(propName: String): PreparedStatement =
         initStmt("UPDATE user SET $propName = $propName + 1 WHERE name = ?")
 
@@ -211,16 +213,16 @@ class DbReactor(config: Config) {
 
     fun hasAppealedKey(key: String): Boolean {
         qs.hasAppealed.setString(1, key)
-        return qs.hasAppealed.executeQuery().next()
+        return qs.hasAppealed.executeQuery().use { it.next() }
     }
 
     fun hasAppealed(info: Administration.PlayerInfo): Boolean {
         qs.hasAppealed.setString(1, info.id)
-        if (qs.hasAppealed.executeQuery().next()) return true
+        if (qs.hasAppealed.executeQuery().use { it.next() }) return true
 
         for (ip in info.ips) {
             qs.hasAppealed.setString(1, ip)
-            if (qs.hasAppealed.executeQuery().next()) return true
+            if (qs.hasAppealed.executeQuery().use { it.next() }) return true
         }
 
         return false
@@ -281,21 +283,22 @@ class DbReactor(config: Config) {
 
     fun getPlayerScore(name: String): PlayerScore? {
         qs.getUser.setString(1, name)
-        val resultSet = qs.getUser.executeQuery()
-        if (!resultSet.next()) return null
         // TODO: we might be able to reduce the boilerplate
-        return PlayerScore(
-            blocksBroken = resultSet.getLong("blocks_broken"),
-            blocksPlaced = resultSet.getLong("blocks_placed"),
-            playTime = resultSet.getLong("play_time"),
-            messagesSent = resultSet.getLong("messages_sent"),
-            commandsExecuted = resultSet.getLong("commands_executed"),
-            enemiesKilled = resultSet.getLong("enemies_killed"),
-            wavesSurvived = resultSet.getLong("waves_survived"),
-            afkTime = resultSet.getLong("afk_time"),
-            blocksDestroyed = resultSet.getLong("blocks_destroyed"),
-            deaths = resultSet.getLong("deaths"),
-        )
+        return qs.getUser.executeQuery().use { rs ->
+            if (!rs.next()) return null
+            PlayerScore(
+                blocksBroken = rs.getLong("blocks_broken"),
+                blocksPlaced = rs.getLong("blocks_placed"),
+                playTime = rs.getLong("play_time"),
+                messagesSent = rs.getLong("messages_sent"),
+                commandsExecuted = rs.getLong("commands_executed"),
+                enemiesKilled = rs.getLong("enemies_killed"),
+                wavesSurvived = rs.getLong("waves_survived"),
+                afkTime = rs.getLong("afk_time"),
+                blocksDestroyed = rs.getLong("blocks_destroyed"),
+                deaths = rs.getLong("deaths"),
+            )
+        }
     }
 
     fun saveMapScore(map: String, maxWave: Int, playtime: Long, won: Boolean) {
@@ -308,13 +311,14 @@ class DbReactor(config: Config) {
 
     fun getMapScore(map: String): MapScore? {
         qs.getMapScore.setString(1, map)
-        val resultSet = qs.getMapScore.executeQuery()
-        if (!resultSet.next()) return null
-        return MapScore(
-            maxWave = resultSet.getInt("max_wave"),
-            shortestPlaytime = resultSet.getLong("shortest_playtime"),
-            longestPlaytime = resultSet.getLong("longest_playtime")
-        )
+        return qs.getMapScore.executeQuery().use { rs ->
+            if (!rs.next()) return null
+            MapScore(
+                maxWave = rs.getInt("max_wave"),
+                shortestPlaytime = rs.getLong("shortest_playtime"),
+                longestPlaytime = rs.getLong("longest_playtime")
+            )
+        }
     }
 
     fun migrate(sql: String) {
@@ -332,16 +336,18 @@ class DbReactor(config: Config) {
 
     fun getUserDiscordId(name: String): String? {
         qs.getUserDiscordId.setString(1, name)
-        val resultSet = qs.getUserDiscordId.executeQuery()
-        if (resultSet.next()) return resultSet.getString("discord_id")
-        return null
+        return qs.getUserDiscordId.executeQuery().use { rs ->
+            if (rs.next()) return rs.getString("discord_id")
+            null
+        }
     }
 
     fun getPlayerNameByDiscordId(id: String): String? {
         qs.getPlayerNameByDiscordId.setString(1, id)
-        val resultSet = qs.getPlayerNameByDiscordId.executeQuery()
-        if (resultSet.next()) return resultSet.getString("name")
-        return null
+        return qs.getPlayerNameByDiscordId.executeQuery().use { rs ->
+            if (rs.next()) return rs.getString("name")
+            null
+        }
     }
 
     fun addFailedTestSession(name: String) {
@@ -352,23 +358,26 @@ class DbReactor(config: Config) {
     fun hasFailedTestSession(name: String, timeout: Int): Long? {
         qs.hasFailedTestSession.setString(1, name)
         qs.hasFailedTestSession.setInt(2, timeout)
-        val resultSet = qs.hasFailedTestSession.executeQuery()
-        if (resultSet.next()) {
-            return resultSet.getLong("happened_at") * 1000
+        return qs.hasFailedTestSession.executeQuery().use { rs ->
+            if (rs.next()) {
+                return rs.getLong("happened_at") * 1000
+            }
+            null
         }
-        return null
     }
 
     fun isGriefer(player: Administration.PlayerInfo): Boolean {
         for (ip in player.ips) {
             qs.isGriefer.setString(1, ip)
-            val resultSet = qs.isGriefer.executeQuery()
-            if (resultSet.next()) return true
+            qs.isGriefer.executeQuery().use { rs ->
+                if (rs.next()) return true
+            }
         }
 
         qs.isGriefer.setString(1, player.id)
-        val resultSet = qs.isGriefer.executeQuery()
-        return resultSet.next()
+        qs.isGriefer.executeQuery().use { rs ->
+            return rs.next()
+        }
     }
 
     fun markGriefer(player: Administration.PlayerInfo, reason: String) {
@@ -442,9 +451,10 @@ class DbReactor(config: Config) {
     fun getRank(player: Player): String {
         if (isGriefer(player.info)) return Rank.GRIEFER
         qs.getRank.setString(1, player.uuid())
-        val resultSet = qs.getRank.executeQuery()
-        if (!resultSet.next()) return Rank.GUEST
-        return resultSet.getString("rank") ?: Rank.GUEST
+        qs.getRank.executeQuery().use { rs ->
+            if (!rs.next()) return Rank.GUEST
+            return rs.getString("rank") ?: Rank.GUEST
+        }
     }
 
     fun clearCachesFor(player: Player) {
@@ -456,11 +466,12 @@ class DbReactor(config: Config) {
     fun getPlayerNameByUuid(uuid: String): String? =
         playerUuidToNameCache.getOrPut(uuid) {
             qs.getLogin.setString(1, uuid)
-            val resultSet = qs.getLogin.executeQuery()
-            if (!resultSet.next()) return null
+            qs.getLogin.executeQuery().use { rs ->
+                if (!rs.next()) return null
 
 
-            return resultSet.getString("name")
+                return rs.getString("name")
+            }
         }
 
     fun loginPlayer(player: Player, name: String, password: String): String? {
@@ -495,8 +506,9 @@ class DbReactor(config: Config) {
 
     fun playerExists(name: String): Boolean {
         qs.getUser.setString(1, name)
-        val resultSet = qs.getUser.executeQuery()
-        return resultSet.next()
+        qs.getUser.executeQuery().use { rs ->
+            return rs.next()
+        }
     }
 
     fun setRank(name: String, rank: String) {
@@ -556,51 +568,52 @@ class DbReactor(config: Config) {
         }
 
         qs.getLogin.setString(1, player.uuid())
-        var resultSet = qs.getLogin.executeQuery();
+        val name = qs.getLogin.executeQuery().use { rs ->
+            if (!rs.next()) {
+                tryBanIp(player)
+                return "hello.guest"
+            }
 
-        if (!resultSet.next()) {
-            tryBanIp(player)
-            return "hello.guest"
+            rs.getString("name")
         }
-
-        val name = resultSet.getString("name")
 
         qs.getUser.setString(1, name)
-        resultSet = qs.getUser.executeQuery();
+        qs.getUser.executeQuery().use { rs ->
+            if (!rs.next()) {
+                err("player ${player.name} is not registered but he has a login")
+                return BUG_MSG
+            }
 
-        if (!resultSet.next()) {
-            err("player ${player.name} is not registered but he has a login")
-            return BUG_MSG
+            val rank = rs.getString("rank")
+            val rankObj = config.getRank(player, rank) ?: return BUG_MSG
+            player.name = "$name${rankObj.display(rank)}"
+
+            return null
         }
-
-        val rank = resultSet.getString("rank")
-        val rankObj = config.getRank(player, rank) ?: return BUG_MSG
-        player.name = "$name${rankObj.display(rank)}"
-
-        return null
     }
 
     fun validatePassword(name: String, password: String): String? {
         qs.getPasswordHash.setString(1, name)
-        val resultSet = qs.getPasswordHash.executeQuery()
-        if (!resultSet.next()) {
-            err("player ${name} is not registered but is trying to login")
-            return "login.register-first"
-        }
+        qs.getPasswordHash.executeQuery().use { rs ->
+            if (!rs.next()) {
+                err("player ${name} is not registered but is trying to login")
+                return "login.register-first"
+            }
 
-        val passwordHash = resultSet.getString("password_hash")
-        if (passwordHash == null) {
-            err("ERROR: player ${name} password hash is null")
-            return BUG_MSG
-        }
+            val passwordHash = rs.getString("password_hash")
+            if (passwordHash == null) {
+                err("ERROR: player ${name} password hash is null")
+                return BUG_MSG
+            }
 
-        @Suppress("DEPRECATION")
-        if (!hasher.verify(passwordHash, password)) {
-            info("player ${name} tried to login with wrong password")
-            return "login.wrong-password"
-        }
+            @Suppress("DEPRECATION")
+            if (!hasher.verify(passwordHash, password)) {
+                info("player ${name} tried to login with wrong password")
+                return "login.wrong-password"
+            }
 
-        return null
+            return null
+        }
     }
 
 
@@ -624,22 +637,27 @@ class DbReactor(config: Config) {
 
     fun status(player: Player): String {
         qs.getLogin.setString(1, player.uuid())
-        var resultSet = qs.getLogin.executeQuery()
-        if (!resultSet.next()) {
-            return player.fmt("status.not-logged-in")
+        qs.getLogin.executeQuery().use { rs ->
+            if (!rs.next()) {
+                return player.fmt("status.not-logged-in")
+            }
         }
 
+
         qs.getUserByUuid.setString(1, player.uuid())
-        resultSet = qs.getUser.executeQuery()
+        qs.getUser.executeQuery().use { rs ->
+            if (!rs.next()) return BUG_MSG
 
-        if (!resultSet.next()) return BUG_MSG
+            val rank = rs.getString("rank")
 
-        val rank = resultSet.getString("rank")
+            val joinedAt = rs.getLong("joined_at")
+            val fmtJoinedAt = displayTime(Instant.ofEpochSecond(joinedAt))
 
-        val joinedAt = resultSet.getLong("joined_at")
-        val fmtJoinedAt = displayTime(Instant.ofEpochSecond(joinedAt))
-
-        return player.fmt("status.listing", "name" to player.name, "rank" to rank, "joined-at" to fmtJoinedAt)
+            return player.fmt(
+                "status.listing",
+                "name" to player.name, "rank" to rank, "joined-at" to fmtJoinedAt
+            )
+        }
     }
 
     fun displayTime(ins: Instant): String {
