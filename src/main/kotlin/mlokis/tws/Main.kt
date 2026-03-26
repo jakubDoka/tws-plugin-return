@@ -393,6 +393,7 @@ class Main : Plugin() {
             val image = ImageIO.read(object {}.javaClass.getResourceAsStream("/block_colors.png"))
 
             for (block in Vars.content.blocks()) {
+                if (block.id.toInt() >= image.width) break
                 block.mapColor.argb8888(image.getRGB(block.id.toInt(), 0));
                 if (block is OreBlock) {
                     block.mapColor.set(block.itemDrop.color);
@@ -1071,6 +1072,11 @@ class Main : Plugin() {
             handler.register(name, signature, Translations.assertDefault("$name.desc")) { args, player: Player ->
                 if (db.isGriefer(player.info)) {
                     player.send("command.griefer")
+                    return@register
+                }
+
+                if (name in config.commands.disabled) {
+                    player.send("command.disabled")
                     return@register
                 }
 

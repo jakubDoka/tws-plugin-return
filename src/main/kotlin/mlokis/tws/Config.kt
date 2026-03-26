@@ -15,6 +15,11 @@ import kotlin.reflect.full.declaredMemberProperties
 import kotlin.reflect.full.primaryConstructor
 
 @Serializable
+data class CommandConfig(
+    val disabled: Set<String>,
+)
+
+@Serializable
 data class RedirectConfig(val ip: String?, val port: Int?)
 
 @Serializable
@@ -96,6 +101,7 @@ data class GlobalConfig(
 @Serializable
 data class Config(
     val globalConfig: GlobalConfig,
+    val commands: CommandConfig,
     val ranks: Map<String, Rank>,
     val test: TestConfig,
     val discord: DiscordConfig,
@@ -118,6 +124,7 @@ data class Config(
 
         val default = Config(
             GlobalConfig(null, "sample.db"),
+            CommandConfig(setOf()),
             mapOf(
                 Rank.GRIEFER to Rank(
                     color = "pink",
