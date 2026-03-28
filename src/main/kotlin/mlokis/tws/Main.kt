@@ -97,6 +97,32 @@ fun sendToAll(message: String, vararg args: Pair<String, Any>) {
     }
 }
 
+var playersWithActiveUi = mutableSetOf<Player>()
+
+var playerInputId = 0
+val passwordInputs = mutableMapOf<Int, (String) -> Unit>()
+
+fun Player.prompt(title: String, message: String, callback: (String) -> Unit) {
+    if (playersWithActiveUi.contains(this)) return
+    playersWithActiveUi.add(this)
+
+    Call.textInput(con, playerInputId, fmt(title), fmt(message), 1024, "", false)
+    passwordInputs[playerInputId] = callback
+    playerInputId++
+}
+
+var playerMenuId = 0;
+val menus = mutableMapOf<Int, (Int) -> Unit>()
+
+fun Player.choose(title: String, message: String, options: Array<String>, callback: (Int) -> Unit) {
+    if (playersWithActiveUi.contains(this)) return
+    playersWithActiveUi.add(this)
+
+    Call.menu(con, playerMenuId, fmt(title), fmt(message), arrayOf(options.map { fmt(it) }.toTypedArray()))
+    menus[playerMenuId] = callback
+    playerMenuId++
+}
+
 fun Boolean.isIsNot(): String = if (this) "is" else "is not"
 
 fun Player.markKick(reason: String) = kick(
@@ -194,6 +220,7 @@ class Main : Plugin() {
     var gameStartTime = 0L
     var grieferMarkTime = 0L
     var serverCommandHandler: CommandHandler? = null
+    var clientCommands: CommandHandler? = null
     var rewindSaverTask: arc.util.Timer.Task? = null
     val skipWaves = SkipWaves()
     val bot: JDA? = run {
@@ -251,7 +278,7 @@ class Main : Plugin() {
 
     data class ChatMessage(val sender: String, val message: String)
 
-    inner abstract class VoteSession(val initiator: Player) {
+    abstract inner class VoteSession(val initiator: Player) {
         val yea = mutableMapOf<Player, Int>()
         val nay = mutableMapOf<Player, Int>()
         var timeRemining = 60 * 2
@@ -494,14 +521,14 @@ class Main : Plugin() {
                 val text = buildString {
                     for ((i, session) in voteSessions.withIndex()) {
                         if (i > 0) append("\n")
-                        append(session.display(i, player))
+                        append(session.display(i + 1, player))
                     }
                 }
 
                 if (text.isEmpty()) {
                     mindustry.gen.Call.hideHudText(player.con)
                 } else {
-                    mindustry.gen.Call.setHudText(player.con, text.toString())
+                    mindustry.gen.Call.setHudText(player.con, text)
                 }
             }
 
@@ -603,17 +630,18 @@ class Main : Plugin() {
 
         mindustry.Vars.netServer.admins.addActionFilter {
             if (it.player == null) return@addActionFilter true
+            val player = it.player
 
-            playerActivityByUuid.getOrPut(it.player.uuid())
-            { PlayerActivityTracker() }.onAction(it.player)
+            playerActivityByUuid.getOrPut(player.uuid())
+            { PlayerActivityTracker() }.onAction(player)
 
-            if (db.isGriefer(it.player.info)) {
-                it.player.send("perm.griefer")
+            if (db.isGriefer(player.info)) {
+                player.send("perm.griefer")
                 return@addActionFilter false
             }
 
-            val playerRankName = db.getRank(it.player)
-            val playerRank = config.getRank(it.player, playerRankName)
+            val playerRankName = db.getRank(player)
+            val playerRank = config.getRank(player, playerRankName)
                 ?: return@addActionFilter false
 
 
@@ -636,7 +664,6 @@ class Main : Plugin() {
                 }
             }
 
-            var catchesProtectedBlock = false;
             if (it.type == Administration.ActionType.placeBlock) {
                 forBlockTiles(it.block) { tile ->
                     val obp = permissionTable[tile] ?: defaultPermission
@@ -649,11 +676,49 @@ class Main : Plugin() {
             }
 
             if (bp.protectionRank.ordinal > playerRank.blockProtectionRank.ordinal && !bp.issuer.isAfk) {
-                it.player.send(
+                player.send(
                     "perm.none",
                     "required" to bp.protectionRank.name,
                     "yours" to playerRank.blockProtectionRank.name
                 )
+
+                when (playerRank.blockProtectionRank) {
+                    BlockProtectionRank.Griefer -> error("should not happen")
+                    BlockProtectionRank.Guest -> {
+                        player.choose(
+                            "perm.guest.title",
+                            "perm.guest.message",
+                            arrayOf("perm.guest.register", "perm.guest.login")
+                        ) { answer ->
+                            if (answer == -1) return@choose
+
+                            when (answer) {
+                                0 -> player.prompt("perm.guest.register.title", "perm.guest.register.name") { name ->
+                                    clientCommands?.handleMessage("/register $name", player)
+                                }
+
+                                1 -> player.prompt("perm.guest.login.title", "perm.guest.login.name") { name ->
+                                    clientCommands?.handleMessage("/login $name", player)
+                                }
+
+                                else -> error("should not happen")
+                            }
+                        }
+                    }
+                    BlockProtectionRank.Unverified -> {
+                        player.choose(
+                            "perm.unverified.title",
+                            "perm.unverified.message",
+                            arrayOf("perm.unverified.test")
+                        ) { answer ->
+                            if (answer == -1) return@choose
+
+                            clientCommands?.handleMessage("/tws-test-start", player)
+                        }
+                    }
+                    BlockProtectionRank.Member -> error("should not happen")
+                }
+
                 return@addActionFilter false
             }
 
@@ -662,10 +727,20 @@ class Main : Plugin() {
             }
 
             forBlockTiles(it.block) { tile ->
-                interactions[tile] = Interaction(it.player.name, it.type)
+                interactions[tile] = Interaction(player.name, it.type)
             }
 
             return@addActionFilter true
+        }
+
+        arc.Events.on(EventType.TextInputEvent::class.java) {
+            playersWithActiveUi.remove(it.player)
+            passwordInputs.remove(it.textInputId)?.invoke(it.text ?: return@on)
+        }
+
+        arc.Events.on(EventType.MenuOptionChooseEvent::class.java) {
+            playersWithActiveUi.remove(it.player)
+            menus.remove(it.menuId)?.invoke(it.option)
         }
 
         arc.Events.on(EventType.BlockDestroyEvent::class.java) { event ->
@@ -1029,29 +1104,7 @@ class Main : Plugin() {
 
 
     override fun registerClientCommands(handler: CommandHandler) {
-        var playerInputId = 0
-        val passwordInputs = mutableMapOf<Int, (String) -> Unit>()
-        arc.Events.on(EventType.TextInputEvent::class.java) {
-            passwordInputs.remove(it.textInputId)?.invoke(it.text ?: return@on)
-        }
-
-        fun Player.prompt(title: String, message: String, callback: (String) -> Unit) {
-            Call.textInput(con, playerInputId, title, message, 1024, "", false)
-            passwordInputs[playerInputId] = callback
-            playerInputId++
-        }
-
-        var playerMenuId = 0;
-        val menus = mutableMapOf<Int, (Int) -> Unit>()
-        arc.Events.on(EventType.MenuOptionChooseEvent::class.java) {
-            menus.remove(it.menuId)?.invoke(it.option)
-        }
-
-        fun Player.choose(title: String, message: String, options: Array<String>, callback: (Int) -> Unit) {
-            Call.menu(con, playerMenuId, title, message, arrayOf(options))
-            menus[playerMenuId] = callback
-            playerMenuId++
-        }
+        clientCommands = handler
 
         fun addSession(session: VoteSession) {
             val existing = voteSessions.find { it.initiator.uuid() == session.initiator.uuid() }
@@ -1062,6 +1115,24 @@ class Main : Plugin() {
 
             voteSessions.add(session)
             handler.handleMessage("/vote y #${voteSessions.size}", session.initiator)
+
+            for (player in Groups.player) {
+                if (player == session.initiator) continue
+                if (player.admin) continue
+
+                player.choose(
+                    "vote.your-decision",
+                    session.display(voteSessions.size, player),
+                    arrayOf("vote.yea", "vote.nay")
+                ) { answer ->
+                    if (answer == -1) return@choose
+
+                    val index = voteSessions.indexOf(session)
+                    if (index == -1) return@choose
+
+                    handler.handleMessage("/vote ${if (answer == 0) "y" else "n"} #${index + 1}", player);
+                }
+            }
         }
 
         fun register(
@@ -1619,8 +1690,8 @@ class Main : Plugin() {
                 }
 
                 player.choose(
-                    "Test question", message,
-                    (0..<question.answers.size).map { "${it + 1}" }.toTypedArray()
+                    "tws-test.question-title", message,
+                    question.answers.indices.map { "${it + 1}" }.toTypedArray()
                 ) { answer ->
 
                     if (answer == -1) return@choose;
@@ -1660,8 +1731,6 @@ class Main : Plugin() {
             }
         }
 
-
-        // player name -> TestSession
         register("tws-test-start") { args, player ->
             val name = db.getPlayerNameByUuid(player.uuid()) ?: run {
                 player.send("no-login")
@@ -1809,7 +1878,7 @@ class Main : Plugin() {
 
         register("login", "<username>") { args, player ->
             val username = args[0]
-            player.prompt("Login", "password") { password ->
+            player.prompt("login.password.title", "login.password.message") { password ->
                 val err = db.loginPlayer(player, username, password)
                 if (err != null) player.send(err)
             }
@@ -1834,9 +1903,9 @@ class Main : Plugin() {
                 return@register
             }
 
-            player.prompt("Change Password", "old-password") { oldPassword ->
-                player.prompt("Change Password", "new-password") { newPassword ->
-                    player.prompt("Change Password", "new-password-again") { newPassword2 ->
+            player.prompt("change-password.title", "change-password.old-password.message") { oldPassword ->
+                player.prompt("change-password.title", "change-password.new-password.message") { newPassword ->
+                    player.prompt("change-password.title", "change-password.new-password-again.message") { newPassword2 ->
                         if (newPassword != newPassword2) {
                             player.send("change-password.mismatch")
                             return@prompt
@@ -1862,8 +1931,8 @@ class Main : Plugin() {
         register("register", "<username>") { args, player ->
             val name = args[0]
 
-            player.prompt("Register", "password") { password ->
-                player.prompt("Register", "password-again") { password2 ->
+            player.prompt("register.title", "register.password.message") { password ->
+                player.prompt("register.title", "register.password-again.message") { password2 ->
                     if (password != password2) {
                         player.send("register.password-mismatch")
                         return@prompt

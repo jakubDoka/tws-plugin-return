@@ -84,10 +84,10 @@ data class BuildCoreConfig(val serpuloScaling: Map<String, Float>, val erekirSca
 
     fun init() {
         erekirScalingMap =
-            erekirScaling.map { (k, v) -> (Util.item(k) ?: error("erekir item $k not found")) to v.toFloat() }
+            erekirScaling.map { (k, v) -> (Util.item(k) ?: error("erekir item $k not found")) to v }
                 .toMap()
         serpuloScalingMap =
-            serpuloScaling.map { (k, v) -> (Util.item(k) ?: error("serpulo item $k not found")) to v.toFloat() }
+            serpuloScaling.map { (k, v) -> (Util.item(k) ?: error("serpulo item $k not found")) to v }
                 .toMap()
     }
 }
