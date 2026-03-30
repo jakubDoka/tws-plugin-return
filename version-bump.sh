@@ -12,13 +12,14 @@ if [ "$2" != "" ]; then
     ./gradlew shadowJar
 
     echo "Copying the plugin to the server"
-    scp -r build/libs/tws-plugin-return-all.jar $2:/root/
+    scp rebooter.sh $2:/root/
+    scp build/libs/tws-plugin-return-all.jar $2:/root/
     scp $0 $2:/root/
     ssh $2 "chmod +x version-bump.sh; ./version-bump.sh $VERSION"
     exit
 fi
 
-if [ "$VERSION" != "" ]; then
+if [ ! -z "$VERSION" ]; then
     echo "Updating the version in the server"
     rm -f server-release.jar
     wget https://github.com/Anuken/Mindustry/releases/download/$VERSION/server-release.jar
@@ -40,3 +41,6 @@ reboot-server() {
 
 reboot-server pvp
 reboot-server survival
+systemctl restart rebooter
+
+echo "Done"
