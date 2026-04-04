@@ -9,6 +9,7 @@ import arc.util.CommandHandler
 import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
+import arc.util.Time
 import arc.util.Tmp
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
@@ -195,17 +196,37 @@ class CachedCounter {
 
 class SkipWaves {
     var toSkip = 0
+    var delay = 0f
+    var countdown = 0f
+
+    fun display(to: Player): String? {
+        if (toSkip != 0) {
+            if (Vars.state.enemies != 0) {
+                return to.fmt("skip-waves.waves-left", "waves" to toSkip)
+            }
+
+            if (countdown > 0) {
+                return to.fmt("skip-waves.waves-left-delay", "waves" to toSkip, "delay" to countdown.toInt())
+            }
+        }
+
+        return null
+    }
 
     fun update() {
-        if (Vars.state.enemies == 0 && toSkip > 0) {
-            Vars.logic.runWave()
-            toSkip--
+        if (Vars.state.enemies != 0 || toSkip == 0) {
+            countdown = delay
+            return
+        }
 
-            if (toSkip == 0) {
-                sendToAll("skip-waves.success")
-            } else {
-                sendToAll("skip-waves.waves-left", "waves" to toSkip)
-            }
+        countdown -= Time.delta / 60f
+        if (countdown > 0) return
+
+        toSkip--
+        Vars.logic.runWave()
+
+        if (toSkip == 0) {
+            sendToAll("skip-waves.success")
         }
     }
 }
@@ -523,6 +544,12 @@ class Main : Plugin() {
                         if (i > 0) append("\n")
                         append(session.display(i + 1, player))
                     }
+
+                    val waveStatus = skipWaves.display(player)
+                    if (waveStatus != null) {
+                        if (isNotEmpty()) append("\n")
+                        append(waveStatus)
+                    }
                 }
 
                 if (text.isEmpty()) {
@@ -705,6 +732,7 @@ class Main : Plugin() {
                             }
                         }
                     }
+
                     BlockProtectionRank.Unverified -> {
                         player.choose(
                             "perm.unverified.title",
@@ -716,6 +744,7 @@ class Main : Plugin() {
                             clientCommands?.handleMessage("/tws-test-start", player)
                         }
                     }
+
                     BlockProtectionRank.Member -> error("should not happen")
                 }
 
@@ -1177,9 +1206,14 @@ class Main : Plugin() {
             })
         }
 
-        register("skip-waves", "<amount>") { args, player ->
+        register("skip-waves", "<amount> [delay]") { args, player ->
             val amount = args[0].toIntOrNull() ?: run {
                 player.send("skip-waves.invalid-amount")
+                return@register
+            }
+
+            val delay = args.getOrElse(1) { "0" }.toIntOrNull() ?: run {
+                player.send("skip-waves.invalid-delay")
                 return@register
             }
 
@@ -1189,6 +1223,7 @@ class Main : Plugin() {
 
                 override fun onPass() {
                     skipWaves.toSkip = amount
+                    skipWaves.delay = delay.toFloat()
                 }
             })
         }
@@ -1905,7 +1940,10 @@ class Main : Plugin() {
 
             player.prompt("change-password.title", "change-password.old-password.message") { oldPassword ->
                 player.prompt("change-password.title", "change-password.new-password.message") { newPassword ->
-                    player.prompt("change-password.title", "change-password.new-password-again.message") { newPassword2 ->
+                    player.prompt(
+                        "change-password.title",
+                        "change-password.new-password-again.message"
+                    ) { newPassword2 ->
                         if (newPassword != newPassword2) {
                             player.send("change-password.mismatch")
                             return@prompt
