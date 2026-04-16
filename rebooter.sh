@@ -12,11 +12,12 @@ while true; do
     for server in $servers; do
         echo "Checking if $server has players..."
         screen -S "$server" -X stuff 'players\n'
-        sleep 1
+        sleep 3
         screen -S "$server" -X hardcopy /tmp/screen_dump.txt
+        sleep 3
         line=$(tail -n 2 /tmp/screen_dump.txt | head -n 1)
+        echo "Last line: $line"
         echo $line | grep -q "No players are currently in the server." || {
-            echo "Last line: $line"
             echo "$server has players, skipping..."
             continue
         }

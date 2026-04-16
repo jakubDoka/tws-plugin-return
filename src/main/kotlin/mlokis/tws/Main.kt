@@ -2,19 +2,11 @@
 
 package mlokis.tws
 
-import arc.math.Mathf
-import java.nio.file.*
-import kotlin.reflect.full.*
 import arc.util.CommandHandler
 import arc.util.Log
 import arc.util.Log.err
 import arc.util.Log.info
 import arc.util.Time
-import arc.util.Tmp
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 import mindustry.Vars
 import mindustry.content.Blocks
 import mindustry.game.EventType
@@ -28,7 +20,6 @@ import mindustry.mod.Plugin
 import mindustry.net.Administration
 import mindustry.net.Packets
 import mindustry.net.WorldReloader
-import mindustry.type.Item
 import mindustry.type.ItemStack
 import mindustry.world.Block
 import mindustry.world.Tile
@@ -36,14 +27,12 @@ import mindustry.world.blocks.environment.OreBlock
 import net.dv8tion.jda.api.JDA
 import net.dv8tion.jda.api.JDABuilder
 import net.dv8tion.jda.api.entities.Activity
-import net.dv8tion.jda.api.entities.Message
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent
 import net.dv8tion.jda.api.hooks.ListenerAdapter
 import net.dv8tion.jda.api.requests.GatewayIntent
 import net.dv8tion.jda.api.utils.FileUpload
 import net.dv8tion.jda.api.utils.messages.MessageCreateBuilder
-import net.dv8tion.jda.api.utils.messages.MessageCreateData
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.absoluteValue
@@ -51,11 +40,8 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
-import java.awt.Color
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.InputStream
 import javax.imageio.ImageIO
 
 object Translations {
@@ -174,6 +160,8 @@ fun Long.displayTime(): String {
     if (seconds > 0) sb.append("${seconds}s")
     if (milliseconds > 0) sb.append("${milliseconds}ms")
 
+    if (sb.isEmpty()) return "0ms"
+
     return sb.toString()
 }
 
@@ -238,7 +226,6 @@ class Main : Plugin() {
     val db = DbReactor(config)
     val voteSessions = mutableListOf<VoteSession>()
     val discordCommands = CommandHandler(config.discord.prefix)
-    var gameStartTime = 0L
     var grieferMarkTime = 0L
     var serverCommandHandler: CommandHandler? = null
     var clientCommands: CommandHandler? = null
@@ -871,6 +858,8 @@ class Main : Plugin() {
                 event.player.send("hello.user", "name" to event.player.plainName())
                 pets.populate(event.player, config.getRank(event.player, db.getRank(event.player)))
             }
+
+            db.updateGamePeakPlayers(Vars.state.map.name(), Groups.player.size())
         }
 
         class TapData(val tile: Tile, val timestamp: Long = System.currentTimeMillis())
@@ -898,18 +887,25 @@ class Main : Plugin() {
         }
 
         arc.Events.on(EventType.GameOverEvent::class.java) { event ->
-            val elapsed = System.currentTimeMillis() - gameStartTime
-            db.saveMapScore(
-                Vars.state.map.name(), Vars.state.wave, elapsed,
+            db.finishGame(
+                Vars.state.map.name(), Vars.state.wave,
                 event.winner == Team.derelict
             )
         }
 
-        arc.Events.on(EventType.PlayEvent::class.java) { event ->
+        fun clearState() {
             permissionTable.clear()
             playerActivityByUuid.clear()
             interactions.clear()
-            gameStartTime = System.currentTimeMillis()
+            db.deleteCorruptedLeftoverGame(Vars.state.map.name())
+        }
+
+        arc.Events.on(EventType.SaveLoadEvent::class.java) { event ->
+            clearState()
+        }
+
+        arc.Events.on(EventType.PlayEvent::class.java) { event ->
+            clearState()
             listSaves().forEach { java.io.File("config/saves/${it}.msav").delete() }
         }
 
@@ -991,7 +987,7 @@ class Main : Plugin() {
                                 "map: **${Vars.state.map.name()}**\n" +
                                 "players: **${Groups.player.size()}**\n" +
                                 "time: **${
-                                    (System.currentTimeMillis() - gameStartTime)
+                                    (System.currentTimeMillis() - db.getGameStartTime())
                                         .displayTime()
                                 }**\n" +
                                 if (Vars.state.rules.mode() == Gamemode.survival)
@@ -1575,10 +1571,14 @@ class Main : Plugin() {
 
             player.send(
                 "[orange]-- ${map.name()} --[]\n" +
+                        "\t[yellow]${score.switches}[] switches (/switch-map)\n" +
                         (if (score.maxWave == 0) "" else "\t[yellow]${score.maxWave}[] waves\n") +
-                        (if (score.shortestPlaytime == Long.MAX_VALUE) "" else
-                            "\t[yellow]${score.shortestPlaytime.displayTime()}[] fastest game\n") +
-                        "\t[yellow]${score.longestPlaytime.displayTime()}[] longest game"
+                        (if (score.minGametime == 0L) "" else
+                            "\t[yellow]${score.minGametime.displayTime()}[] shortest game\n") +
+                        "\t[yellow]${score.maxGametime.displayTime()}[] longest game\n" +
+                        "\t[yellow]${score.totalGametime.displayTime()}[] total gametime\n" +
+                        "\t[yellow]${score.maxPeakPlayers}[] max peak players\n" +
+                        "\n\t[yellow]${score.totalGames}[] games played\n"
             )
         }
 
@@ -1590,10 +1590,10 @@ class Main : Plugin() {
                     player.fmt("switch-map", "name" to map.name())
 
                 override fun onPass() {
+                    db.incMapSwitches(map.name())
+
                     val reload = WorldReloader()
-
                     reload.begin()
-
 
                     Vars.world.loadMap(map, map.applyRules(Gamemode.survival))
                     Vars.state.rules = Vars.state.map.applyRules(Gamemode.survival)

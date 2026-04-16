@@ -55,7 +55,37 @@ CREATE TABLE IF NOT EXISTS failed_test_sessions (
 
 CREATE TABLE IF NOT EXISTS map_score (
 	name TEXT PRIMARY KEY,
-	max_wave INTEGER NOT NULL DEFAULT 0,
-	shortest_playtime INTEGER NOT NULL DEFAULT 9223372036854775807,
-	longest_playtime INTEGER NOT NULL DEFAULT 0
+	switches INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS game (
+	id INTEGER PRIMARY KEY,
+	map TEXT NOT NULL,
+	started_at INTEGER NOT NULL DEFAULT (unixepoch()),
+	finished_at INTEGER NOT NULL DEFAULT 0,
+	wave INTEGER NOT NULL DEFAULT 0,
+	peak_players INTEGER NOT NULL DEFAULT 0,
+	won INTEGER NOT NULL DEFAULT 0,
+
+	FOREIGN KEY(map) REFERENCES map_score(name)
+		ON DELETE CASCADE
+		ON UPDATE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS game_map_index ON game (map);
+
+DROP   VIEW IF     EXISTS aggregated_map_score;
+CREATE VIEW IF NOT EXISTS aggregated_map_score AS
+	SELECT
+		m.name                                         as name,
+		m.switches                                     as switches,
+		COALESCE(max(g.finished_at - g.started_at), 0) as max_gametime,
+		min(g.finished_at - g.started_at)              as min_gametime,
+		COALESCE(sum(g.finished_at - g.started_at), 0) as total_gametime,
+		COALESCE(max(g.wave), 0)                       as max_wave,
+		COALESCE(max(g.peak_players), 0)               as max_peak_players,
+		COALESCE(sum(g.won), 0)                        as total_wins,
+		count(g.map)                                   as total_games
+	FROM map_score m
+	LEFT JOIN game g ON m.name = g.map
+	GROUP BY m.name;

@@ -80,15 +80,21 @@ private class Queryes(val connection: Connection) {
         initStmt("SELECT * FROM failed_test_sessions WHERE name = ? and unixepoch() - happened_at < ? * 1000 * 60 * 60")
 
     // MAP
-    val getMapScore = initStmt("SELECT * FROM map_score WHERE name = ?")
-    val setMapScore =
-        initStmt(
-            "INSERT INTO map_score (name, max_wave, shortest_playtime, longest_playtime) VALUES (?, ?, ?, ?)" +
-                    " ON CONFLICT(name) DO UPDATE SET" +
-                    " max_wave = max(max_wave, excluded.max_wave)," +
-                    " shortest_playtime = min(shortest_playtime, excluded.shortest_playtime)," +
-                    " longest_playtime = max(longest_playtime, excluded.longest_playtime)"
-        )
+    val ensureMapScore = initStmt("INSERT INTO map_score (name) VALUES (?) ON CONFLICT(name) DO NOTHING")
+    val getMapScore = initStmt("SELECT * FROM aggregated_map_score WHERE name = ?")
+    val incMapSwitches = initStmt("UPDATE map_score SET switches = switches + 1 WHERE name = ?")
+
+    val assertLatestGame = "id = (SELECT MAX(id) FROM game)"
+
+    var addGame = initStmt("INSERT INTO game (map) VALUES (?)")
+    val getGameStartTime = initStmt("SELECT started_at FROM game WHERE $assertLatestGame")
+    val deleteCorruptedLeftoverGame = initStmt("DELETE FROM game WHERE map != ? AND $assertLatestGame")
+    val isGameInProgress =
+        initStmt("SELECT EXISTS(SELECT 1 FROM game WHERE map = ? AND $assertLatestGame AND finished_at = 0)")
+    val finishGame =
+        initStmt("UPDATE game SET finished_at = unixepoch(), wave = ?, won = ? WHERE map = ? AND $assertLatestGame")
+    val updateGamePeakPlayers =
+        initStmt("UPDATE game SET peak_players = max(peak_players, ?) WHERE map = ? AND $assertLatestGame")
 
     val addTest = initStmt("INSERT INTO test (id) VALUES (?)")
 
@@ -107,7 +113,15 @@ private class Queryes(val connection: Connection) {
     }
 }
 
-data class MapScore(val maxWave: Int, val shortestPlaytime: Long, val longestPlaytime: Long)
+data class MapScore(
+    val switches: Int,
+    val maxGametime: Long,
+    val minGametime: Long,
+    val totalGametime: Long,
+    val maxWave: Int,
+    val maxPeakPlayers: Int,
+    val totalGames: Int,
+)
 
 @Serializable
 data class PlayerScore(
@@ -301,12 +315,16 @@ class DbReactor(config: Config) {
         }
     }
 
-    fun saveMapScore(map: String, maxWave: Int, playtime: Long, won: Boolean) {
-        qs.setMapScore.setString(1, map)
-        qs.setMapScore.setInt(2, maxWave)
-        qs.setMapScore.setLong(3, if (won) playtime else Long.MAX_VALUE)
-        qs.setMapScore.setLong(4, playtime)
-        qs.setMapScore.executeUpdate()
+    fun ensureMapScore(map: String) {
+        qs.ensureMapScore.setString(1, map)
+        qs.ensureMapScore.executeUpdate()
+    }
+
+    fun incMapSwitches(map: String) {
+        ensureMapScore(map)
+
+        qs.incMapSwitches.setString(1, map)
+        qs.incMapSwitches.executeUpdate()
     }
 
     fun getMapScore(map: String): MapScore? {
@@ -314,11 +332,56 @@ class DbReactor(config: Config) {
         return qs.getMapScore.executeQuery().use { rs ->
             if (!rs.next()) return null
             MapScore(
+                switches = rs.getInt("switches"),
+                maxGametime = rs.getLong("max_gametime"),
+                minGametime = rs.getLong("min_gametime"),
+                totalGametime = rs.getLong("total_gametime"),
                 maxWave = rs.getInt("max_wave"),
-                shortestPlaytime = rs.getLong("shortest_playtime"),
-                longestPlaytime = rs.getLong("longest_playtime")
+                maxPeakPlayers = rs.getInt("max_peak_players"),
+                totalGames = rs.getInt("total_games"),
             )
         }
+    }
+
+    fun ensureGame(map: String) {
+        ensureMapScore(map)
+
+        qs.isGameInProgress.setString(1, map)
+        qs.isGameInProgress.executeQuery().use { rs ->
+            assert(rs.next())
+
+            if (rs.getInt(1) == 1) return
+
+            qs.addGame.setString(1, map)
+            qs.addGame.executeUpdate()
+        }
+    }
+
+    fun getGameStartTime(): Long {
+        qs.getGameStartTime.executeQuery().use { rs ->
+            if (!rs.next()) return System.currentTimeMillis()
+            return rs.getLong("started_at")
+        }
+    }
+
+    fun deleteCorruptedLeftoverGame(map: String) {
+        qs.deleteCorruptedLeftoverGame.setString(1, map)
+        qs.deleteCorruptedLeftoverGame.executeUpdate()
+    }
+
+    fun finishGame(map: String, wave: Int, won: Boolean) {
+        qs.finishGame.setInt(1, wave)
+        qs.finishGame.setInt(2, if (won) 1 else 0)
+        qs.finishGame.setString(3, map)
+        qs.finishGame.executeUpdate()
+    }
+
+    fun updateGamePeakPlayers(map: String, peakPlayers: Int) {
+        ensureGame(map)
+
+        qs.updateGamePeakPlayers.setInt(1, peakPlayers)
+        qs.updateGamePeakPlayers.setString(2, map)
+        qs.updateGamePeakPlayers.executeUpdate()
     }
 
     fun migrate(sql: String) {
@@ -488,7 +551,7 @@ class DbReactor(config: Config) {
 
         playerUuidToNameCache[player.uuid()] = name
 
-        info("player ${name} logged in")
+        info("player $name logged in")
         player.stateKick("login.success")
 
         return null
@@ -554,7 +617,7 @@ class DbReactor(config: Config) {
                         }
                     }
                 } catch (e: Exception) {
-                    err("error checking vpn status: ${body}")
+                    err("error checking vpn status: $body")
                     e.printStackTrace()
                 }
             }
@@ -596,19 +659,19 @@ class DbReactor(config: Config) {
         qs.getPasswordHash.setString(1, name)
         qs.getPasswordHash.executeQuery().use { rs ->
             if (!rs.next()) {
-                err("player ${name} is not registered but is trying to login")
+                err("player $name is not registered but is trying to login")
                 return "login.register-first"
             }
 
             val passwordHash = rs.getString("password_hash")
             if (passwordHash == null) {
-                err("ERROR: player ${name} password hash is null")
+                err("ERROR: player $name password hash is null")
                 return BUG_MSG
             }
 
             @Suppress("DEPRECATION")
             if (!hasher.verify(passwordHash, password)) {
-                info("player ${name} tried to login with wrong password")
+                info("player $name tried to login with wrong password")
                 return "login.wrong-password"
             }
 
@@ -630,7 +693,7 @@ class DbReactor(config: Config) {
             return "register.already-registered"
         }
 
-        info("player ${name} registered")
+        info("player $name registered")
 
         return null
     }
