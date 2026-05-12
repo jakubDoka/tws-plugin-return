@@ -1518,7 +1518,7 @@ class Main : Plugin() {
             val maps = Vars.maps.all().map { it.name() }
 
             val commandsPerPage = 10;
-            var page = if (args.isNotEmpty()) args[0].toInt() else 1;
+            var page = if (args.isNotEmpty()) (args[0].toIntOrNull() ?: 1) else 1;
             val pages = ceil(maps.size.toFloat() / commandsPerPage).toInt();
 
             page--;
